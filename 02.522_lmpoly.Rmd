@@ -1,0 +1,307 @@
+---
+title: "Linear Models with Polynomial Expressions"
+author: "1st Author"
+date: "3/8/2024"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#### Run Linear Models (02.521), then proceed to this .Rmd to add polynomial expressions, running LOOCV
+#### LM with Shannon_md ~ longitude^3 + combined rugosity was the best out of all 3 models
+
+##### Load libraries
+```{r}
+library(caret)
+library(lme4)
+library(combinat)
+library(ggplot2)
+library(tree)
+library(class)
+library(mgcv)
+library(nlme)
+library(devtools)
+library(rfPermute)
+library(gamclass)
+library(caTools)
+library(ModelMetrics)
+library(modelr)
+library(purrr)
+library(tidyverse)
+```
+
+#### Read in data table containing diversity and structure data
+```{r}
+multi_div = read.csv("md_str_11_10_2023.csv")
+```
+
+##### Get subset of the multi_div dataset
+##### This subset includes the significantly correlated metrics at respective scales
+```{r}
+#Select the least correlated metrics, along with latitude, longitude, MAT and MAP
+#VAI, deep-gap fraction 100m, rumple, elevation rugosity 1m, Entropy at 50, combined rugosity at 60m
+
+sub1 = multi_div[,c("MDI_Shannon", "lat", "lon", "MAP", "MAT", "r.._50m", "mmh.", "X40_95h", "rumple.", "VAI.", "dgf._100m")]
+
+colnames(sub1)[1] <- "shannon_md" #MDI
+colnames(sub1)[6] <- "combined_complexity" #combined rugosity
+colnames(sub1)[7] <- "mean_canopy_height"
+colnames(sub1)[8] <- "max_height"
+colnames(sub1)[9] <- "rumple"
+colnames(sub1)[10] <- "VAI" #Vegetative Area Index
+colnames(sub1)[11] <- "dgf" #Deepgap fraction
+```
+
+
+##### Deciding on what degree of polynomial to choose
+#####  test the null hypothesis that a model is sufficient to explain the data against the alternative hypothesis that another is required
+```{r}
+lm1 = lm(shannon_md ~ lon + MAT + combined_complexity + max_height, data = sub1)
+
+plm1 = lm(shannon_md ~ poly(lon, 2) + MAT + combined_complexity + max_height, data = sub1)
+
+plm2 = lm(shannon_md ~ poly(lon, 3) + MAT + combined_complexity + max_height, data = sub1)
+
+plm3 = lm(shannon_md ~ poly(lon, 3) + poly(MAT,2) + combined_complexity + max_height, data = sub1)
+
+plm4 = lm(shannon_md ~ poly(lon, 2) + poly(MAT,2) + combined_complexity + max_height, data = sub1)
+
+plm5 = lm(shannon_md ~ poly(lon, 2) + poly(MAT,3) + combined_complexity + max_height, data = sub1)
+
+plm6 = lm(shannon_md ~ poly(lon, 4) + poly(MAT,2) + combined_complexity + max_height, data = sub1)
+
+summary(plm3)
+summary(plm6)
+
+print(anova(lm1, plm1, plm2, plm3, plm4, plm5, plm6))
+```
+
+
+##### plm3 seems to be the best
+##### Run LOOCV on linear model plm3
+```{r}
+set.seed(125)
+
+# Perform LOOCV with Random Forest
+loocv_results1 <- train(
+  shannon_md ~ poly(lon, 3) + poly(MAT, 2) + combined_complexity + max_height,
+  data = sub1,
+  method = "lm",
+  trControl = trainControl(method = "LOOCV")
+)
+
+print(loocv_results1)
+```
+
+##### Pull our predictions
+```{r}
+pred_model1 = loocv_results1$pred
+
+pred_model1 = cbind(pred_model1, all_metrics$siteID)
+pred_model1 = cbind(pred_model1, all_metrics$forest_type)
+
+colnames(pred_model1)[5] = "siteID"
+colnames(pred_model1)[6] = "forest_type"
+
+RMSE(pred_model1$obs, pred_model1$pred)
+R2(pred_model1$pred, pred_model1$obs)
+MAE(pred_model1$pred, pred_model1$obs)
+```
+
+##### Plot
+```{r}
+#tiff('loocv_plm1_str_div.tiff', units="in", width = 10, height=8, res=600, compression = 'lzw')
+ggplot(pred_model1, aes(x = obs, y = pred, color = forest_type)) +
+  geom_smooth(method = "lm", aes(fill = forest_type, col = forest_type), alpha = 0.2, linetype = "dashed") + 
+  geom_point(aes(shape = forest_type, fill = forest_type), size = 12, alpha = 0.7) +
+  scale_shape_manual(values = c(22, 24, 21)) + 
+  scale_color_manual(values = c("Mixed" = "cyan4", "Deciduous" = "deeppink",
+                                "Evergreen" = "darkgreen")) +
+  scale_fill_manual(values = c("Mixed" = "cyan3", "Deciduous" = "#E7298A",
+                                "Evergreen" = "darkgreen")) +
+  geom_abline(size = 1) +
+  theme(axis.ticks.length = unit(-0.2, "cm"), axis.title = element_text(size = 20, face = "bold", colour = "black"), 
+       panel.background = element_blank(), panel.border = element_rect(fill = NA, colour = "black"), 
+       axis.text = element_text(face = "bold", size = 15, colour = "black"), legend.key = element_blank()) +
+  labs(title = "LM Predicted, lon, combined rug, mh, MAT", x = "Observed", y =  "Predicted") +
+  annotate("text", x = 0.3, y = 0.9, label = "R2 = 0.58, RMSE = 0.12") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0,1)) + 
+  scale_y_continuous(expand = c(0, 0), limits = c(0,1))
+#dev.off()
+```
+
+##### We will now model the linear model with the lowest AIC
+##### Can run LOOCV
+```{r}
+set.seed(128)
+
+# Perform LOOCV with Random Forest
+loocv_results2 <- train(
+  shannon_md ~ poly(lon, 3) + combined_complexity,
+  data = sub1,
+  method = "lm",
+  trControl = trainControl(method = "LOOCV")
+)
+
+print(loocv_results2)
+```
+
+##### Look at observed vs fitted
+```{r}
+pred_model2 = loocv_results2$pred
+
+pred_model2 = cbind(pred_model2, all_metrics$siteID)
+pred_model2 = cbind(pred_model2, all_metrics$forest_type)
+
+colnames(pred_model2)[5] = "siteID"
+colnames(pred_model2)[6] = "forest_type"
+
+RMSE(pred_model2$obs, pred_model2$pred)
+R2(pred_model2$pred, pred_model2$obs)
+MAE(pred_model2$pred, pred_model2$obs)
+```
+
+##### Plot
+```{r}
+tiff('loocv_plm_str_div.tiff', units="in", width = 10, height=8, res=600, compression = 'lzw')
+ggplot(pred_model2, aes(x = obs, y = pred, color = forest_type)) +
+  geom_smooth(method = "lm", aes(fill = forest_type, col = forest_type), alpha = 0.2, linetype = "dashed") + 
+  geom_point(aes(shape = forest_type, fill = forest_type), size = 12, alpha = 0.7) +
+  scale_shape_manual(values = c(22, 24, 21)) + 
+  scale_color_manual(values = c("Mixed" = "cyan4", "Deciduous" = "deeppink",
+                                "Evergreen" = "darkgreen")) +
+  scale_fill_manual(values = c("Mixed" = "cyan3", "Deciduous" = "#E7298A",
+                                "Evergreen" = "darkgreen")) +
+  geom_abline(size = 1) +
+  theme(axis.ticks.length = unit(-0.2, "cm"), axis.title = element_text(size = 20, face = "bold", colour = "black"), 
+       panel.background = element_blank(), panel.border = element_rect(fill = NA, colour = "black"), 
+       axis.text = element_text(face = "bold", size = 15, colour = "black"), legend.key = element_blank()) +
+  labs(title = "LM Predicted, lon3, combined rug", x = "Observed", y =  "Predicted") +
+  annotate("text", x = 0.3, y = 0.9, label = "R2 = 0.68, RMSE = 0.11") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0,1)) + 
+  scale_y_continuous(expand = c(0, 0), limits = c(0,1))
+dev.off()
+```
+
+```{r}
+set.seed(128)
+
+# Perform LOOCV with Random Forest
+loocv_results2 <- train(
+  shannon_md ~ poly(lon, 3) + combined_complexity,
+  data = sub1,
+  method = "lm",
+  trControl = trainControl(method = "LOOCV")
+)
+
+print(loocv_results2)
+```
+
+```{r}
+set.seed(128)
+
+# Perform LOOCV with Random Forest
+loocv_results2 <- train(
+  shannon_md ~ poly(lon, 2) + poly(MAP, 2) + MAT,
+  data = sub1,
+  method = "lm",
+  trControl = trainControl(method = "LOOCV")
+)
+
+print(loocv_results2)
+```
+
+##### Look at observed vs fitted
+```{r}
+pred_model2 = loocv_results2$pred
+
+pred_model2 = cbind(pred_model2, all_metrics$siteID)
+pred_model2 = cbind(pred_model2, all_metrics$forest_type)
+
+colnames(pred_model2)[5] = "siteID"
+colnames(pred_model2)[6] = "forest_type"
+
+RMSE(pred_model2$obs, pred_model2$pred)
+R2(pred_model2$pred, pred_model2$obs)
+MAE(pred_model2$pred, pred_model2$obs)
+```
+
+##### Plot
+```{r}
+tiff('loocv_geoenv_str_div.tiff', units="in", width = 10, height=8, res=600, compression = 'lzw')
+ggplot(pred_model2, aes(x = obs, y = pred, color = forest_type)) +
+  geom_smooth(method = "lm", aes(fill = forest_type, col = forest_type), alpha = 0.2, linetype = "dashed") + 
+  geom_point(aes(shape = forest_type, fill = forest_type), size = 12, alpha = 0.7) +
+  scale_shape_manual(values = c(22, 24, 21)) + 
+  scale_color_manual(values = c("Mixed" = "cyan4", "Deciduous" = "deeppink",
+                                "Evergreen" = "darkgreen")) +
+  scale_fill_manual(values = c("Mixed" = "cyan3", "Deciduous" = "#E7298A",
+                                "Evergreen" = "darkgreen")) +
+  geom_abline(size = 1) +
+  theme(axis.ticks.length = unit(-0.2, "cm"), axis.title = element_text(size = 20, face = "bold", colour = "black"), 
+       panel.background = element_blank(), panel.border = element_rect(fill = NA, colour = "black"), 
+       axis.text = element_text(face = "bold", size = 15, colour = "black"), legend.key = element_blank()) +
+  labs(title = "PRM Predicted, lon3, map2, mat", x = "Observed", y =  "Predicted") +
+  annotate("text", x = 0.3, y = 0.9, label = "R2 = 0.41, RMSE = 0.16") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0,1)) + 
+  scale_y_continuous(expand = c(0, 0), limits = c(0,1))
+dev.off()
+```
+
+```{r}
+set.seed(128)
+
+# Perform LOOCV with Random Forest
+loocv_results2 <- train(
+  shannon_md ~ poly(lon, 2) + MAT + poly(MAP,2) + combined_complexity,
+  data = sub1,
+  method = "lm",
+  trControl = trainControl(method = "LOOCV")
+)
+
+print(loocv_results2)
+```
+
+##### Look at observed vs fitted
+```{r}
+pred_model2 = loocv_results2$pred
+
+pred_model2 = cbind(pred_model2, all_metrics$siteID)
+pred_model2 = cbind(pred_model2, all_metrics$forest_type)
+
+colnames(pred_model2)[5] = "siteID"
+colnames(pred_model2)[6] = "forest_type"
+
+RMSE(pred_model2$obs, pred_model2$pred)
+R2(pred_model2$pred, pred_model2$obs)
+MAE(pred_model2$pred, pred_model2$obs)
+```
+
+```{r}
+write.csv(all_metrics, "all_metrics.csv")
+```
+
+##### Plot
+```{r}
+tiff('loocv_geoenvcc_str_div.tiff', units="in", width = 10, height=8, res=600, compression = 'lzw')
+ggplot(pred_model2, aes(x = obs, y = pred, color = forest_type)) +
+  geom_smooth(method = "lm", aes(fill = forest_type, col = forest_type), alpha = 0.2, linetype = "dashed") + 
+  geom_point(aes(shape = forest_type, fill = forest_type), size = 12, alpha = 0.7) +
+  scale_shape_manual(values = c(22, 24, 21)) + 
+  scale_color_manual(values = c("Mixed" = "cyan4", "Deciduous" = "deeppink",
+                                "Evergreen" = "darkgreen")) +
+  scale_fill_manual(values = c("Mixed" = "cyan3", "Deciduous" = "#E7298A",
+                                "Evergreen" = "darkgreen")) +
+  geom_abline(size = 1) +
+  theme(axis.ticks.length = unit(-0.2, "cm"), axis.title = element_text(size = 20, face = "bold", colour = "black"), 
+       panel.background = element_blank(), panel.border = element_rect(fill = NA, colour = "black"), 
+       axis.text = element_text(face = "bold", size = 15, colour = "black"), legend.key = element_blank()) +
+  labs(title = "PRM Predicted, lon3, map2, mat", x = "Observed", y =  "Predicted") +
+  annotate("text", x = 0.3, y = 0.9, label = "R2 = 0.61, RMSE = 0.12") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0,1)) + 
+  scale_y_continuous(expand = c(0, 0), limits = c(0,1))
+dev.off()
+```
+

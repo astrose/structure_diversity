@@ -1,0 +1,276 @@
+---
+title: "Linear Model for Structure v Diversity"
+author: "1st Author"
+date: "3/8/2024"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Run Random Forest Model then do a LOOCV
+#### Load libraries
+```{r}
+library(caret)
+library(lme4)
+install.packages("combinat")
+library(combinat)
+library(ggplot2)
+library(tree)
+library(class)
+library(mgcv)
+library(nlme)
+library(devtools)
+library(rfPermute)
+library(gamclass)
+library(caTools)
+library(ModelMetrics)
+library(modelr)
+library(purrr)
+library(tidyverse)
+```
+
+#### Read in data table containing diversity and structure data
+```{r}
+multi_div = read.csv("~/input_data_files/md_str_11_10_2023.csv")
+```
+
+##### Get subset of the multi_div dataset
+##### This subset includes the significantly correlated metrics at respective scales
+```{r}
+#Select the least correlated metrics, along with latitude, longitude, MAT and MAP
+#VAI, deep-gap fraction 100m, rumple, elevation rugosity 1m, Entropy at 50, combined rugosity at 60m
+
+all_metrics = multi_div[,c("siteID", "forest_type", "MDI_Shannon", "lat", "lon", "MAP", "MAT", "r.._50m", "hr..", "mmh.", "X40_95h", "rumple.", "VAI.", "VCI._100m", "dgf._100m", "cf._100m", "E._50m", "tr._50m", "er.", "me._40m","maxe._60m", "sl._100m", "TRI.", "ro.")]
+
+#write.csv(all_metrics, "all_metrics_full.csv")
+
+sub1 = multi_div[,c("MDI_Shannon", "lat", "lon", "MAP", "MAT", "r.._50m", "mmh.", "X40_95h", "rumple.", "VAI.", "dgf._100m")]
+
+colnames(sub1)[1] <- "shannon_md" #MDI
+colnames(sub1)[6] <- "combined_complexity" #combined rugosity
+colnames(sub1)[7] <- "mean_canopy_height"
+colnames(sub1)[8] <- "max_height"
+colnames(sub1)[9] <- "rumple"
+colnames(sub1)[10] <- "VAI" #Vegetative Area Index
+colnames(sub1)[11] <- "dgf" #Deepgap fraction
+```
+
+#### Run Linear Model
+#### Look at all combinations of variables, select model with lowest AIC or error
+```{r, error = T}
+variables <- c("lat", "lon", "MAP", "MAT", "combined_complexity", "mean_canopy_height", "max_height", "rumple", "VAI")
+
+# Generate all combinations of variable indices
+all_combinations <- lapply(2:length(variables), function(k) combinat::combn(variables, k, simplify = FALSE))
+
+# Fit linear models for combinations with fewer than 5 variables
+models <- list()
+model_count <- 0
+
+for (combinations in all_combinations) {
+  for (i in 1:length(combinations)) {
+    variables_subset <- combinations[[i]]
+    
+    # Check the number of variables in the subset
+    if (length(variables_subset) < 5) {
+      formula <- as.formula(paste("shannon_md ~", paste(variables_subset, collapse = " + ")))
+      
+      # Use tryCatch to handle errors
+      tryCatch({
+        model <- gam(formula, data = sub1)
+        models[[model_count + i]] <- list(formula = formula, model = model)
+      }, error = function(e) {
+        cat("Error occurred for combination:", paste(variables_subset, collapse = ", "), "\n")
+      })
+    }
+  }
+  model_count <- model_count + length(combinations)
+}
+
+
+# Initialize an empty list to store results
+
+results_list <- list()
+
+# Assuming 'models' is a list of model objects
+for (i in 1:length(models)) {
+  if (!is.null(models[[i]])) {
+    # Extract the relevant information
+    model_info <- list(
+      Formula = as.character(models[[i]]$formula),
+      AIC = models[[i]]$model$aic,
+      RMSE = sqrt(mean(models[[i]]$model$residuals^2))
+    )
+    
+    # Append the information to the results list
+    results_list[[i]] <- model_info
+  }
+}
+
+# Convert the list of results into a data frame
+results_df <- do.call(rbind, results_list)
+
+#write.csv(results_df, "lm_combinations.csv")
+```
+
+##### Run LOOCV on linear model 1
+##### Linear model with lowest RMSE is investigated first
+```{r}
+set.seed(125)
+ 
+# Perform LOOCV with Random Forest
+loocv_results1 <- train(
+  shannon_md ~ lon + MAP + combined_complexity + max_height,
+  data = sub1,
+  method = "lm",
+  trControl = trainControl(method = "LOOCV")
+)
+
+print(loocv_results1)
+```
+
+##### Pull out predictions
+```{r}
+model1_pred = as.data.frame(loocv_results1$pred)
+
+
+model1_pred = cbind(model1_pred, all_metrics$siteID)
+model1_pred = cbind(model1_pred, all_metrics$forest_type)
+
+colnames(model1_pred)[5] = "siteID"
+colnames(model1_pred)[6] = "forest_type"
+
+RMSE(model1_pred$obs, model1_pred$pred)
+R2(model1_pred$pred, model1_pred$obs)
+MAE(model1_pred$pred, model1_pred$obs)
+```
+
+##### Plot
+```{r}
+#tiff('lm_str_div.tiff', units="in", width = 10, height=8, res=600, compression = 'lzw')
+ggplot(model1_pred, aes(x = obs, y = pred, color = forest_type)) +
+  geom_smooth(method = "lm", aes(fill = forest_type, col = forest_type), alpha = 0.2, linetype = "dashed") + 
+  geom_point(aes(shape = forest_type, fill = forest_type), size = 12, alpha = 0.7) +
+  scale_shape_manual(values = c(22, 24, 21)) + 
+  scale_color_manual(values = c("Mixed" = "cyan4", "Deciduous" = "deeppink",
+                                "Evergreen" = "darkgreen")) +
+  scale_fill_manual(values = c("Mixed" = "cyan3", "Deciduous" = "#E7298A",
+                                "Evergreen" = "darkgreen")) +
+  geom_abline(size = 1) +
+  theme(axis.ticks.length = unit(-0.2, "cm"), axis.title = element_text(size = 20, face = "bold", colour = "black"), 
+       panel.background = element_blank(), panel.border = element_rect(fill = NA, colour = "black"), 
+       axis.text = element_text(face = "bold", size = 15, colour = "black"), legend.key = element_blank()) +
+  labs(title = "LM Predicted, lon, combined rug, mh, MAT", x = "Observed", y =  "Predicted") +
+  annotate("text", x = 0.3, y = 0.9, label = "R2 = 0.49, RMSE = 0.13") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0,1)) + 
+  scale_y_continuous(expand = c(0, 0), limits = c(0,1))
+#dev.off()
+```
+
+##### We will now model the linear model with the lowest AIC
+##### Can run another LOOCV
+```{r}
+set.seed(128)
+
+# Perform LOOCV with Random Forest
+loocv_results2 <- train(
+  shannon_md ~ lon + combined_complexity,
+  data = sub1,
+  method = "lm",
+  trControl = trainControl(method = "LOOCV")
+)
+
+print(loocv_results2)
+```
+
+##### Look at observed vs fitted
+```{r}
+model2_pred = as.data.frame(loocv_results2$pred)
+
+model2_pred = cbind(model2_pred, all_metrics$siteID)
+model2_pred = cbind(model2_pred, all_metrics$forest_type)
+
+colnames(model2_pred)[5] = "siteID"
+colnames(model2_pred)[6] = "forest_type"
+
+RMSE(model2_pred$obs, model2_pred$pred)
+R2(model2_pred$pred, model2_pred$obs)
+MAE(model2_pred$pred, model2_pred$obs)
+```
+
+##### Plot
+```{r}
+tiff('lm2_str_div.tiff', units="in", width = 10, height=8, res=600, compression = 'lzw')
+
+ggplot(model2_pred, aes(x = obs, y = pred, color = forest_type)) +
+  geom_smooth(method = "lm", aes(fill = forest_type, col = forest_type), alpha = 0.2, linetype = "dashed") + 
+  geom_point(aes(shape = forest_type, fill = forest_type), size = 12, alpha = 0.7) +
+  scale_shape_manual(values = c(22, 24, 21)) + 
+  scale_color_manual(values = c("Mixed" = "cyan4", "Deciduous" = "deeppink",
+                                "Evergreen" = "darkgreen")) +
+  scale_fill_manual(values = c("Mixed" = "cyan3", "Deciduous" = "#E7298A",
+                                "Evergreen" = "darkgreen")) +
+  geom_abline(size = 1) +
+  theme(axis.ticks.length = unit(-0.2, "cm"), axis.title = element_text(size = 20, face = "bold", colour = "black"), 
+       panel.background = element_blank(), panel.border = element_rect(fill = NA, colour = "black"), 
+       axis.text = element_text(face = "bold", size = 15, colour = "black"), legend.key = element_blank()) +
+  labs(title = "LM Predicted, lon, combined rug", x = "Observed", y =  "Predicted") +
+  annotate("text", x = 0.3, y = 0.9, label = "R2 = 0.51, RMSE = 0.13") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0,1)) + 
+  scale_y_continuous(expand = c(0, 0), limits = c(0,1))
+
+dev.off()
+```
+
+```{r}
+lm = lm(MDI_Shannon ~ lon, data = all_metrics)
+summary(lm)
+
+model2_pred = as.data.frame(lm$fitted.values)
+
+model2_pred = cbind(model2_pred, all_metrics$MDI_Shannon)
+
+RMSE(model2_pred$`all_metrics$MDI_Shannon`, model2_pred$`lm$fitted.values`)
+
+R2(model2_pred$`lm$fitted.values`, model2_pred$`all_metrics$MDI_Shannon`)
+```
+```{r}
+lm = lm(MDI_Shannon ~ lat, data = all_metrics)
+summary(lm)
+```
+```{r}
+lm = lm(MDI_Shannon ~ MAP, data = all_metrics)
+summary(lm)
+
+lm = lm(MDI_Shannon ~ MAT, data = all_metrics)
+summary(lm)
+
+lm = lm(MDI_Shannon ~ X40_95h, data = all_metrics)
+summary(lm)
+
+lm = lm(MDI_Shannon ~ all_metrics$mmh., data = all_metrics)
+summary(lm)
+
+lm = lm(MDI_Shannon ~ all_metrics$VAI., data = all_metrics)
+summary(lm)
+
+lm = lm(MDI_Shannon ~ all_metrics$rumple., data = all_metrics)
+summary(lm)
+
+lm = lm(MDI_Shannon ~ all_metrics$dgf._60m, data = all_metrics)
+summary(lm)
+
+lm = lm(MDI_Shannon ~ all_metrics$sl._100m, data = all_metrics)
+summary(lm)
+
+lm = lm(MDI_Shannon ~ all_metrics$maxe._100m, data = all_metrics)
+summary(lm)
+
+lm = lm(MDI_Shannon ~ all_metrics$VCI._100m, data = all_metrics)
+summary(lm)
+
+lm = lm(MDI_Shannon ~ all_metrics$E._50m, data = all_metrics)
+summary(lm)
+```

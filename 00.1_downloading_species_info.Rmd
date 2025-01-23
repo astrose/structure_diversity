@@ -1,0 +1,371 @@
+---
+title: "Dowloading Diversity Data"
+author: "1st Author"
+date: "2023-02-25"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#### Here we are downloading the diversity data from neon and cleaning it
+#### Download and load necessary libraries
+```{r}
+install.packages("tidyverse")
+install.packages("neonUtilities")
+install.packages("multcomp")
+install.packages("dplyr")
+install.packages("janitor")
+install.packages("vegan")
+
+#Load libraries
+library(neonUtilities)
+library(dplyr)
+library(tidyverse)
+library(neonUtilities)
+library(multcomp)
+library(janitor)
+library(vegan)
+```
+
+##### Download Beetle data using neonUtilities packages
+```{r, eval = FALSE, echo = FALSE}
+beetle_data = loadByProduct(dpID = "DP1.10022.001", 
+                            site= c("BONA", "CLBJ", "DEJU", "GUAN", "HARV", "KONZ", "LENO", "MLBS","NIWO", "ONAQ", "ORNL", "OSBS", "SCBI", "SJER", "SOAP", "TALL", "UKFS", "UNDE", "WREF","YELL", "ABBY", "BART", "BLAN", "DELA",  "GRSM", "HEAL", "JERC", "MOAB", "TEAK", "PUUM", "SERC", "RMNP","STEI", "TREE"),
+                            startdate = "2013-01", enddate = "2022-12",
+                            check.size = FALSE)
+```
+
+##### Extract expert taxonomic ID from data list
+```{r}
+beetle_full_data = beetle_data$bet_expertTaxonomistIDProcessed
+
+#Remove rows where siteID and taxon ID says NA
+beetle_full_data = beetle_full_data %>% drop_na(taxonID)
+beetle_full_data = beetle_full_data %>% drop_na(siteID)
+```
+
+##### Write beetle total diversity that includes taxonomic information and field information
+```{r}
+write.csv(beetle_full_data, "beetle_full_data.csv", row.names = FALSE)
+```
+
+##### Download bird data
+```{r}
+bird_data= loadByProduct(dpID = "DP1.10003.001", 
+              site= c("BONA", "CLBJ", "DEJU", "GUAN", "HARV", "KONZ", "LENO", "MLBS","NIWO", "ONAQ", "ORNL", "OSBS", "SCBI", "SJER", "SOAP", "TALL", "UKFS", "UNDE", "WREF","YELL", "ABBY", "BART", "BLAN", "DELA",  "GRSM", "HEAL", "JERC", "MOAB", "TEAK", "PUUM", "SERC", "RMNP","STEI", "TREE"),
+              startdate = "2013-01", enddate = "2022-12",
+              check.size = FALSE)
+
+```
+
+##### Extract expert taxonomic ID from data list
+```{r}
+#Download brd_countdata table and bird_fielddata (metadata) from list of beetle field data
+bird_taxa = bird_data$brd_countdata
+
+bird_fieldData = bird_data$brd_perpoint
+```
+
+#Merge taxonomic and field data by namedLocation
+```{r}
+bird_full_data = merge(bird_taxa, bird_fieldData,
+                   by = c("eventID", "pointID", "uid", "plotID", "siteID", "domainID", "release",
+                          "plotType", "startDate", "namedLocation", "publicationDate") ,
+                   all = TRUE, check.duplicates = FALSE)
+
+#Remove rows where taxon ID says NA
+#This will have the same contents as the bird taxa dataframe,
+#with added columns from field table
+bird_full_data = bird_full_data %>% drop_na(taxonID)
+```
+
+##### Write bird presence data that includes taxonomic information and field information to csv
+```{r}
+write.csv(bird_full_data, "bird_full_data.csv", row.names = FALSE)
+```
+
+###### This code uses Plant presence and percent cover data from NEON https://data.neonscience.org/data-products/DP1.10058.001
+####### Download and load necessary packages
+###### Download plant data selected forested sites using neonutilities for each site
+```{r, error = T}
+plant_data = loadByProduct(dpID = "DP1.10058.001", 
+              site= c("BONA", "CLBJ", "DEJU", "GUAN", "HARV", "KONZ", "LENO", "MLBS","NIWO", "ONAQ", "ORNL", "OSBS", "SCBI", "SJER", "SOAP", "TALL", "UKFS", "UNDE", "WREF","YELL", "ABBY", "BART", "BLAN", "DELA",  "GRSM", "HEAL", "JERC", "MOAB", "TEAK", "PUUM", "SERC", "RMNP","STEI", "TREE"),
+              startdate = "2013-01", enddate = "2022-12",
+              check.size = FALSE)
+
+#For metadata purposes, extract the tables we will be merging and write to csv
+plant_1m = plant_data$div_1m2Data
+plant_10m_100m = plant_data$div_10m2Data100m2Data
+
+write.csv(plant_1m, "plant_1m.csv", row.names = F)
+write.csv(plant_10m_100m, "plant_10m_100m.csv", row.names = F)
+```
+
+###### Extract expert taxonomic ID from data list using function.
+###### This chunk was obained from: https://github.com/admahood/neonPlantEcology/blob/master/R/diversity_data_prep.R
+Citation: Adam Mahood. (2021). admahood/neondiveRsity: Added betadiversity and dissolve_years options (v1.2.5). Zenodo. https://doi.org/10.5281/zenodo.5261104
+```{r}
+get_longform_cover <- function(neon_div_object,
+                               trace_cover=0.5,
+                               scale = "plot",
+                               dissolve_years = FALSE,
+                               fix_unks = FALSE){
+  require(dplyr)
+  require(tidyr)
+  require(stringr)
+  require(magrittr)
+  if(scale == "plot"){
+    cover <- neon_div_object$div_1m2Data %>%
+      dplyr::mutate(endDate = as.Date(endDate)) %>%
+      dplyr::filter(divDataType == "plantSpecies") %>%
+      dplyr::mutate(year = str_c(str_sub(endDate,1,4)))%>%
+      tidyr::replace_na(list(percentCover=trace_cover)) %>%
+      dplyr::group_by(plotID, subplotID, taxonID, year) %>%
+      # dealing with the multiple bout issue by first getting the max cover
+      # per sampling effort
+      dplyr::summarise(cover = max(percentCover),
+                       nativeStatusCode = first(nativeStatusCode),
+                       scientificName = first(scientificName),
+                       family = first(family)) %>%
+      dplyr::ungroup()  %>%
+      dplyr::filter(taxonID != "") %>%
+      dplyr::group_by(plotID, taxonID, year) %>%
+      dplyr::summarise(cover = sum(cover, na.rm=TRUE)/8,
+                       nativeStatusCode = first(nativeStatusCode),
+                       scientificName = first(scientificName),
+                       family = first(family)) %>%
+      dplyr::ungroup()
+    
+    traces <- neon_div_object$div_10m2Data100m2Data %>%
+      dplyr::mutate(endDate = as.Date(endDate)) %>%
+      dplyr::filter(targetTaxaPresent == "Y") %>%
+      dplyr::mutate(year = str_c(str_sub(endDate,1,4)))%>%
+      dplyr::group_by(plotID, subplotID, taxonID, year) %>%
+      dplyr::summarise(cover = trace_cover,
+                       scientificName = first(scientificName),
+                       nativeStatusCode = first(nativeStatusCode),
+                       family = first(family)) %>%
+      dplyr::ungroup() %>%
+      dplyr::filter(taxonID != "") %>%
+      dplyr::group_by(plotID, taxonID, year) %>%
+      dplyr::summarise(cover = sum(cover, na.rm=TRUE)/12,
+                       nativeStatusCode = first(nativeStatusCode),
+                       scientificName = first(scientificName),
+                       family = first(family)) %>%
+      dplyr::ungroup()
+    
+    full_on_cover <- dplyr::bind_rows(cover, traces) %>%
+      dplyr::group_by(plotID, taxonID, year, nativeStatusCode, scientificName, family) %>%
+      dplyr::summarise(cover = sum(cover)) %>%
+      dplyr::ungroup()%>%
+      dplyr::mutate(site = str_sub(plotID, 1,4),
+                    subplotID = "plot")
+    if(fix_unks) full_on_cover <- full_on_cover %>%  unk_fixer()
+    
+    if(dissolve_years) {
+      year_range <- unique(full_on_cover$year)%>%
+        as.numeric %>%
+        range %>%
+        paste(collapse = "-")
+      n_years <- length(unique(full_on_cover$year))
+      full_on_cover <- full_on_cover %>%
+        dplyr::group_by(plotID, taxonID, nativeStatusCode, scientificName, family, site, subplotID) %>%
+        dplyr::summarise(cover = sum(cover, na.rm=T)/n_years) %>%
+        dplyr::ungroup() %>%
+        dplyr::mutate(year = year_range)
+    }
+    
+    return(full_on_cover)
+  }
+  if(scale == "site"){
+    cover <- neon_div_object$div_1m2Data %>%
+      dplyr::mutate(endDate = as.Date(endDate)) %>%
+      dplyr::filter(divDataType == "plantSpecies") %>%
+      dplyr::mutate(year = str_c(str_sub(endDate,1,4)))%>%
+      tidyr::replace_na(list(percentCover=trace_cover)) %>%
+      dplyr::group_by(plotID, subplotID, taxonID, year) %>%
+      # dealing with the multiple bout issue by first getting the max cover
+      # per sampling effort
+      dplyr::summarise(cover = max(percentCover),
+                       nativeStatusCode = first(nativeStatusCode),
+                       scientificName = first(scientificName),
+                       family = first(family)) %>%
+      dplyr::ungroup()  %>%
+      dplyr::filter(taxonID != "") %>%
+      dplyr::group_by(plotID, taxonID, year) %>%
+      dplyr::summarise(cover = sum(cover, na.rm=TRUE)/8,
+                       nativeStatusCode = first(nativeStatusCode),
+                       scientificName = first(scientificName),
+                       family = first(family)) %>%
+      dplyr::ungroup()
+    
+    traces <- neon_div_object$div_10m2Data100m2Data %>%
+      dplyr::mutate(endDate = as.Date(endDate)) %>%
+      dplyr::filter(targetTaxaPresent == "Y") %>%
+      dplyr::mutate(year = str_c(str_sub(endDate,1,4)))%>%
+      dplyr::group_by(plotID, subplotID, taxonID, year) %>%
+      dplyr::summarise(cover = trace_cover,
+                       scientificName = first(scientificName),
+                       nativeStatusCode = first(nativeStatusCode),
+                       family = first(family)) %>%
+      dplyr::ungroup() %>%
+      dplyr::filter(taxonID != "") %>%
+      dplyr::group_by(plotID, taxonID, year) %>%
+      dplyr::summarise(cover = sum(cover, na.rm=TRUE)/12,
+                       nativeStatusCode = first(nativeStatusCode),
+                       scientificName = first(scientificName),
+                       family = first(family)) %>%
+      dplyr::ungroup()
+    
+    n_plots <- length(unique(cover$plotID))
+    
+    full_on_cover <- dplyr::bind_rows(cover, traces) %>%
+      dplyr::group_by(plotID, taxonID, year, nativeStatusCode, scientificName, family) %>%
+      dplyr::summarise(cover = sum(cover)) %>%
+      dplyr::ungroup()%>%
+      dplyr::mutate(site = str_sub(plotID, 1,4)) %>%
+      dplyr::group_by(site, taxonID, year, nativeStatusCode, scientificName, family) %>%
+      dplyr::summarise(cover = sum(cover)/n_plots) %>%
+      dplyr::mutate(subplotID = "site",
+                    plotID = "site") %>%
+      dplyr::ungroup()
+    if(fix_unks) full_on_cover <- full_on_cover %>%  unk_fixer()
+    if(dissolve_years) {
+      year_range <- unique(full_on_cover$year)%>%
+        as.numeric %>%
+        range %>%
+        paste(collapse = "-")
+      n_years <- length(unique(full_on_cover$year))
+      full_on_cover <- full_on_cover %>%
+        dplyr::group_by(plotID, taxonID, nativeStatusCode, scientificName, family, site, subplotID) %>%
+        dplyr::summarise(cover = sum(cover, na.rm=T)/n_years) %>%
+        dplyr::ungroup() %>%
+        dplyr::mutate(year = year_range)
+    }
+    return(full_on_cover)
+  }
+  
+  cover8 <- neon_div_object$div_1m2Data %>%
+    dplyr::mutate(endDate = as.Date(endDate)) %>%
+    dplyr::filter(divDataType == "plantSpecies") %>%
+    dplyr::mutate(year = str_c(str_sub(endDate,1,4)))%>%
+    # entries in the df with no values but species was there
+    # i.e. someone put the sp. code and forgot to fill in the number
+    # putting as trace cover value
+    tidyr::replace_na(list(percentCover=trace_cover)) %>%
+    dplyr::mutate(endDate = as.Date(endDate)) %>%
+    dplyr::filter(divDataType == "plantSpecies") %>%
+    dplyr::mutate(year = str_c(str_sub(endDate,1,4)))%>%
+    dplyr::group_by(plotID, subplotID, taxonID, year) %>%
+    # dealing with the multiple bout issue by first getting the mean cover
+    # per sampling effort, without aggregating, then later we'll aggregate.
+    # that way, a fall-bloomer that isn't visible in spring, for example,
+    # will be given its full cover value for fall, but then a species
+    # that is there for both seasons will be averaged, if that makes sense
+    dplyr::summarise(cover = max(percentCover),
+                     nativeStatusCode = first(nativeStatusCode),
+                     scientificName = first(scientificName),
+                     family = first(family)) %>%
+    dplyr::ungroup()  %>%
+    dplyr::filter(taxonID != "") %>%
+    dplyr::mutate(subplotID = str_sub(subplotID, 1, 4))
+  
+  
+  # 10m2,100m2 are given 0.5 (we can change later)
+  # unique(x$div_10m2Data100m2Data$subplotID) # there are 12 subplots
+  
+  traces8 <- neon_div_object$div_10m2Data100m2Data %>%
+    dplyr::mutate(endDate = as.Date(endDate)) %>%
+    dplyr::filter(targetTaxaPresent == "Y") %>%
+    dplyr::mutate(year = str_c(str_sub(endDate,1,4)))%>%
+    dplyr::group_by(plotID, subplotID, taxonID, year) %>%
+    dplyr::summarise(cover = trace_cover,
+                     scientificName = first(scientificName),
+                     nativeStatusCode = first(nativeStatusCode),
+                     family = first(family)) %>%
+    dplyr::ungroup() %>%
+    dplyr::filter(taxonID != "",
+                  subplotID != "31", # these are the 100m2 subplots under which two 1m2 and 10m2 pairs are nested
+                  subplotID != "32",
+                  subplotID != "40",
+                  subplotID != "41")  %>%
+    dplyr::mutate(subplotID = str_sub(subplotID, 1, 4))
+  
+  traces100s <- neon_div_object$div_10m2Data100m2Data %>%
+    dplyr::mutate(endDate = as.Date(endDate)) %>%
+    dplyr::filter(targetTaxaPresent == "Y") %>%
+    dplyr::mutate(year = str_c(str_sub(endDate,1,4)))%>%
+    dplyr::group_by(plotID, subplotID, taxonID, year) %>%
+    dplyr::summarise(cover = trace_cover,
+                     scientificName = first(scientificName),
+                     nativeStatusCode = first(nativeStatusCode),
+                     family = first(family)) %>%
+    dplyr::ungroup() %>%
+    dplyr::mutate(site = str_sub(plotID, 1,4)) %>%
+    dplyr::filter(taxonID != "",
+                  subplotID == "31"| #These are the 100m2 subplots under which two 1m2 and 10m2 pairs are nested
+                    subplotID == "32"|
+                    subplotID == "40"|
+                    subplotID == "41")
+  
+  #Aggregating at different scales 
+  cover8_1m2 <- cover8 %>%
+    dplyr::group_by(plotID, subplotID, taxonID, year, nativeStatusCode, scientificName, family) %>%
+    dplyr::summarise(cover = sum(cover)) %>%
+    dplyr::ungroup()%>%
+    dplyr::mutate(site = str_sub(plotID, 1,4))
+  if(fix_unks) cover8_1m2 <- unk_fixer(cover8_1m2)
+  
+  cover8_1m2_10m2 <- rbind(cover8, traces8) %>%
+    dplyr::group_by(plotID,subplotID, taxonID, year, nativeStatusCode, scientificName, family) %>%
+    dplyr::summarise(cover = sum(cover)) %>%
+    dplyr::ungroup()%>%
+    dplyr::mutate(site = str_sub(plotID, 1,4))
+  if(fix_unks) cover8_1m2_10m2<-cover8_1m2_10m2 %>%  unk_fixer()
+  
+  cover4 <- cover8_1m2_10m2 %>%
+    dplyr::mutate(subplotID = str_sub(subplotID, 1,2)) %>%
+    dplyr::bind_rows(traces100s) %>% #Adding in the 100m2 subplots
+    dplyr::group_by(plotID, subplotID, year, taxonID) %>%
+    dplyr::summarise(cover = sum(cover), #This is summing together repeats from the rbinding
+                     scientificName = first(scientificName),
+                     nativeStatusCode = first(nativeStatusCode),
+                     family = first(family),
+                     site = first(site)) %>%
+    dplyr::ungroup()
+  if(fix_unks) cover4 <- cover4 %>%  unk_fixer()
+  
+  
+  if(scale == "1m") full_on_cover <- cover8_1m2
+  if(scale == "10m") full_on_cover <- cover8_1m2_10m2
+  if(scale == "100m") full_on_cover <- cover4
+  
+  if(dissolve_years) {
+    year_range <- unique(full_on_cover$year)%>%
+      as.numeric %>%
+      range %>%
+      paste(collapse = "-")
+    n_years <- length(unique(full_on_cover$year))
+    full_on_cover <- full_on_cover %>%
+      dplyr::group_by(plotID, taxonID, nativeStatusCode, scientificName, family, site, subplotID) %>%
+      dplyr::summarise(cover = sum(cover, na.rm=T)/n_years) %>%
+      dplyr::ungroup() %>%
+      dplyr::mutate(year = year_range)
+  }
+  
+  
+  return(full_on_cover)
+}
+
+plant_full_data = get_longform_cover(plant_data)
+```
+
+###### Remove Unknown species (indicated as 2Plant in dataset)
+```{r}
+plant_full_data1 = plant_full_data[!grepl(c("2PLANT","2PLANT-H", "2PLANT-S"), plant_full_data$taxonID),]
+
+write.csv(plant_full_data1, "plant_full_data.csv", row.names = FALSE)
+```
+

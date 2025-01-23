@@ -1,0 +1,496 @@
+---
+title: "Processing Bird, Beetle and Plant Diversity"
+author: "1st Author"
+date: "2023-02-25"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#### Here we are downloading data from neon, cleaning it, and calculating diversity
+#### If you are dealing with processed data tables (ie. beetle_full_data.csv, bird_full_data.csv, etc. start on line 132)
+#### Download and load necessary libraries
+```{r}
+install.packages("tidyverse")
+install.packages("neonUtilities")
+install.packages("multcomp")
+install.packages("dplyr")
+install.packages("janitor")
+install.packages("vegan")
+
+#Load libraries
+library(neonUtilities)
+library(dplyr)
+library(tidyverse)
+library(neonUtilities)
+library(multcomp)
+library(janitor)
+library(vegan)
+```
+
+###### There isn't a count for beetles, more so a presence and absence data
+### Goal:
+##### Run species richness for each site
+##### Create data frame with different species for each site
+##### Pseudoabundance is how many times the species is repeated (run for each site)
+##### Count number of times a unique species occurs in each site
+#####Read in full df
+```{r}
+beetle_full_data = read.csv("input_data.files/beetle_full_data.csv")
+```
+
+```{r}
+#Beetle occurrence only sorted by siteID
+#Quantify beetle occurrence
+#Group by specific epithet and site ID
+beetle_occ = beetle_full_data %>%
+  tabyl(specificEpithet, siteID, sort = TRUE)
+
+#Show species distribution for each species for each site
+beetle_occ = data.frame(t(beetle_occ))
+names(beetle_occ) <- as.matrix(beetle_occ[1,])
+beetle_occ = beetle_occ[-1,]
+beetle_occ[] <- lapply(beetle_occ, function(x) type.convert(as.character((x))))
+
+#The last column was empty so I removed it
+beetle_occ = beetle_occ[,-467]
+
+#Count the number of non-zero cells for each row
+#This will give you the richness per site
+#This will appear in the final column of the dataset
+beetle_occ$count <- rowSums(beetle_occ!=0)
+
+#Rename count as species richness
+names(beetle_occ)[467] = "species_richness"
+
+
+#Calculate abundance
+#Sum all rows except species_richness column
+row_sum = data.frame(rowSums(beetle_occ[, -467]))
+
+#rename column
+names(row_sum)[1] = "total_organism"
+
+#rename 0th column
+beetle_occ<-tibble::rownames_to_column(beetle_occ, "siteID") 
+
+#rename 0th column
+row_sum<-tibble::rownames_to_column(row_sum, "siteID") 
+
+#merge row_sum dataframe with beetle_occ dataframe by 
+beetle_occ = merge(beetle_occ, row_sum,
+                   by = "siteID",
+                   all = TRUE, check.duplicates = FALSE)
+
+#This table contains occurrence and richness values (last 2 columns)
+```
+
+
+###### Write Occurrence data to CSV file.
+```{r}
+write.csv(beetle_occ, "beetle_occ.csv", row.names = FALSE)
+```
+
+###### Import csv of site data from: https://www.neonscience.org/field-sites/explore-field-sites
+```{r}
+site_info = read.csv("NEON_Field_Site_Metadata_2021.csv")
+
+# Select interest sites
+site_info = site_info[site_info$field_site_id %in% c("BONA", "CLBJ", "DEJU", "GUAN", "HARV", "KONZ", "LENO", "MLBS","NIWO", "ONAQ", "ORNL", "OSBS", "SCBI", "SJER", "SOAP", "TALL", "UKFS", "UNDE", "WREF","YELL", "ABBY", "BART", "BLAN", "DELA",  "GRSM", "HEAL", "JERC", "MOAB", "TEAK", "PUUM", "SERC", "RMNP","STEI", "TREE"), ]
+
+#Merge info for interest site with data
+beetle_field_data = merge(beetle_occ, site_info, by.x = "siteID", by.y = "field_site_id")
+
+#Import table into GIS and Make layers in GIS with species richness and total
+#number of species. This helps to visualize diversity.
+#Still have to figure out of to graph it
+```
+
+
+###### Create another dataframe which contains diversity information
+###### Calculate Diversity indices using the Vegan Package in R
+```{r}
+beetle_full_data = read.csv("input_data_files/beetle_full_data.csv")
+
+beetle_sp_div = t(beetle_full_data %>%
+  tabyl(specificEpithet, siteID, sort = TRUE))
+
+#Convert to Data frame 
+beetle_sp_div = data.frame(beetle_sp_div)
+
+
+#Place specific epithet as row titles
+names(beetle_sp_div) <- as.matrix(beetle_sp_div[1,])
+beetle_sp_div = beetle_sp_div[-1,]
+beetle_sp_div[] <- lapply(beetle_sp_div, function(x) type.convert(as.character((x))))
+```
+
+#Calculate Diversity Indices
+```{r}
+beetle_sp_div = beetle_sp_div[,c(1:466)]
+
+#Simpson Diversity
+simpson_diversity = data.frame(diversity(beetle_sp_div, "simpson"))
+simpson_diversity <-tibble::rownames_to_column(simpson_diversity, "siteID") 
+
+#Shannon Diversity
+shannon_diversity = data.frame(diversity(beetle_sp_div, "shannon"))
+shannon_diversity <-tibble::rownames_to_column(shannon_diversity, "siteID") 
+
+#Calculate Chao1 diversity
+chao_ace = as.data.frame(estimateR(beetle_sp_div))
+chao_ace = t(chao_ace)
+colnames(chao_ace)[2] = "Chao1_Beetle"
+colnames(chao_ace)[4] = "ACE_Beetle"
+chao_ace = as.data.frame(chao_ace[,c(2,4)])
+chao_ace = tibble::rownames_to_column(chao_ace, "siteID") 
+
+richness <- as.data.frame(rowSums(beetle_sp_div!=0))
+colnames(richness)[1] = "Richness_Beetle"
+
+#Merge all diversity tables
+
+diversity_index = merge(shannon_diversity, simpson_diversity, by = "siteID")
+
+names(diversity_index)[2] = "Shannon_Beetle"
+names(diversity_index)[3] = "Simpson_Beetle"
+
+diversity_index = merge(diversity_index, chao_ace, by = "siteID")
+
+#beetle_field_data = merge(diversity_index, beetle_field_data, by = "siteID")
+#write.csv(beetle_field_data, "beetle_field_data.csv", row.names = FALSE)
+#richness = data.frame(beetle_occ[, -c(2:467)])
+
+beetle_diversity_indices = cbind(diversity_index, richness)
+
+write.csv(beetle_diversity_indices, "beetle_div_indices.csv")
+```
+
+
+### Goal:
+##### Run species richness for each site
+##### Create data frame with different species for each site
+##### Pseudoabundance is how many times the species is repeated (run for each site)
+##### Count number of times a unique species occurs in each site
+
+```{r}
+bird_full_data = read.csv("input_data.files/bird_full_data.csv")
+
+#Bird occurrence only sorted by siteID
+#Quantify bird occurrence
+#Group by specific epithet and site ID
+bird_occ = bird_full_data %>%
+  tabyl(taxonID, siteID, sort = TRUE)
+
+#Show species distribution for each species for each site
+bird_occ = data.frame(t(bird_occ))
+
+#Place taxon as column labels
+names(bird_occ) <- as.matrix(bird_occ[1,])
+bird_occ = bird_occ[-1,] #remove the first line containing the taxonomic names
+bird_occ[] <- lapply(bird_occ, function(x) type.convert(as.character((x))))
+
+#Count the number of non-zero cells for each row
+#This will give you the richness per site
+#This will appear in the final column of the dataset
+bird_occ$count <- rowSums(bird_occ!=0)
+
+#Rename last column "count" as "species_richness"
+names(bird_occ)[467] = "species_richness"
+
+#Calculate abundance
+#Sum all rows except species_richness column
+row_sum = data.frame(rowSums(bird_occ[, -467]))
+
+#Rename column
+names(row_sum)[1] = "total_organisms"
+
+#Rename 0th column
+bird_occ<-tibble::rownames_to_column(bird_occ, "siteID") 
+
+#Rename 0th column
+row_sum<-tibble::rownames_to_column(row_sum, "siteID") 
+
+#Merge row_sum dataframe with bird_occ dataframe by 
+bird_occ = merge(bird_occ, row_sum,
+                   by = "siteID",
+                   all = TRUE, check.duplicates = FALSE)
+
+#This table contains occurrence and richness values (last 2 columns)
+```
+
+##### Write Occurrence data to CSV file.
+```{r}
+write.csv(bird_occ, "bird_occ.csv", row.names = FALSE)
+```
+
+```{r}
+#Merge info for interest site with site information data
+bird_field_data = merge(bird_occ, site_info, by.x = "siteID", by.y = "field_site_id")
+```
+
+###### Create another dataframe which contains diversity information
+###### Calculate Diversity indices using the Vegan Package in R
+```{r}
+bird_sp_div = t(bird_full_data %>%
+  tabyl(taxonID, siteID, sort = TRUE))
+
+#Convert to Data frame 
+bird_sp_div = data.frame(bird_sp_div)
+
+
+#Place specific epithet as row titles
+names(bird_sp_div) <- as.matrix(bird_sp_div[1,])
+bird_sp_div = bird_sp_div[-1,]
+bird_sp_div[] <- lapply(bird_sp_div, function(x) type.convert(as.character((x))))
+
+
+#Calculate Diversity Indices
+#Simpson Diversity
+simpson_diversity = data.frame(diversity(bird_sp_div, "simpson"))
+simpson_diversity <-tibble::rownames_to_column(simpson_diversity, "siteID") 
+
+#Shannon Diversity
+shannon_diversity = data.frame(diversity(bird_sp_div, "shannon"))
+shannon_diversity <-tibble::rownames_to_column(shannon_diversity, "siteID") 
+
+#Merge all shannon and simpson diversity data tables
+diversity_index = merge(shannon_diversity, simpson_diversity, by = "siteID")
+
+#Rename diversity columns
+names(diversity_index)[2] = "shannon"
+names(diversity_index)[3] = "simpson"
+
+
+bird_field_data = merge(diversity_index, bird_field_data, by = "siteID")
+write.csv(bird_field_data, "bird_field_data.csv", row.names = FALSE)
+
+#Import table into GIS and Make layers in GIS with species richness and total
+#Number of species. This helps to visualize diversity.
+
+#Merge richness and diversity indices
+diversity = data.frame(bird_field_data[, c(1:3, 470:471)])
+write.csv(richness, "bird_div_indices.csv")
+```
+
+###### Create another dataframe which contains diversity information
+###### Calculate Diversity indices using the Vegan Package in R
+```{r}
+bird_full_data = read.csv("input_dta_files/bird_full_data.csv")
+
+bird_sp_div = t(bird_full_data %>%
+                    tabyl(taxonID, siteID, sort = TRUE))
+
+#Convert to Data frame 
+bird_sp_div = data.frame(bird_sp_div)
+
+
+#Place specific epithet as row titles
+names(bird_sp_div) <- as.matrix(bird_sp_div[1,])
+bird_sp_div = bird_sp_div[-1,]
+bird_sp_div[] <- lapply(bird_sp_div, function(x) type.convert(as.character((x))))
+```
+
+#Calculate Diversity Indices
+```{r}
+#Simpson Diversity
+simpson_diversity = data.frame(diversity(bird_sp_div, "simpson"))
+simpson_diversity <-tibble::rownames_to_column(simpson_diversity, "siteID") 
+
+#Shannon Diversity
+shannon_diversity = data.frame(diversity(bird_sp_div, "shannon"))
+shannon_diversity <-tibble::rownames_to_column(shannon_diversity, "siteID") 
+
+#Calculate Chao1 diversity
+chao_ace = as.data.frame(estimateR(bird_sp_div))
+chao_ace = t(chao_ace)
+colnames(chao_ace)[2] = "Chao1_bird"
+colnames(chao_ace)[4] = "ACE_bird"
+chao_ace = as.data.frame(chao_ace[,c(2,4)])
+chao_ace = tibble::rownames_to_column(chao_ace, "siteID") 
+
+richness <- as.data.frame(rowSums(bird_sp_div!=0))
+colnames(richness)[1] = "Richness_bird"
+
+#Merge all diversity tables
+
+diversity_index = merge(shannon_diversity, simpson_diversity, by = "siteID")
+
+names(diversity_index)[2] = "Shannon_bird"
+names(diversity_index)[3] = "Simpson_bird"
+
+diversity_index = merge(diversity_index, chao_ace, by = "siteID")
+
+#bird_field_data = merge(diversity_index, bird_field_data, by = "siteID")
+#write.csv(bird_field_data, "bird_field_data.csv", row.names = FALSE)
+#richness = data.frame(bird_occ[, -c(2:467)])
+
+bird_diversity_indices = cbind(diversity_index, richness)
+
+#write.csv(bird_diversity_indices, "bird_div_indices.csv")
+```
+
+
+
+###### Create another dataframe which contains diversity information
+###### Calculate Diversity indices using the Vegan Package in R
+```{r}
+plant_full_data = read.csv("input_dta_files/plant_full_data.csv")
+
+plant_sp_div = t(plant_full_data %>%
+                    tabyl(taxonID, site, sort = TRUE))
+
+#Convert to Data frame 
+plant_sp_div = data.frame(plant_sp_div)
+
+
+#Place specific epithet as row titles
+names(plant_sp_div) <- as.matrix(plant_sp_div[1,])
+plant_sp_div = plant_sp_div[-1,]
+plant_sp_div[] <- lapply(plant_sp_div, function(x) type.convert(as.character((x))))
+```
+
+#Calculate Diversity Indices
+```{r}
+#Simpson Diversity
+simpson_diversity = data.frame(diversity(plant_sp_div, "simpson"))
+simpson_diversity <-tibble::rownames_to_column(simpson_diversity, "siteID") 
+
+#Shannon Diversity
+shannon_diversity = data.frame(diversity(plant_sp_div, "shannon"))
+shannon_diversity <-tibble::rownames_to_column(shannon_diversity, "siteID") 
+
+#Calculate Chao1 diversity
+chao_ace = as.data.frame(estimateR(plant_sp_div))
+chao_ace = t(chao_ace)
+colnames(chao_ace)[2] = "Chao1_plant"
+colnames(chao_ace)[4] = "ACE_plant"
+chao_ace = as.data.frame(chao_ace[,c(2,4)])
+chao_ace = tibble::rownames_to_column(chao_ace, "siteID") 
+
+richness <- as.data.frame(rowSums(plant_sp_div!=0))
+colnames(richness)[1] = "Richness_plant"
+
+#Merge all diversity tables
+
+diversity_index = merge(shannon_diversity, simpson_diversity, by = "siteID")
+
+names(diversity_index)[2] = "Shannon_plant"
+names(diversity_index)[3] = "Simpson_plant"
+
+diversity_index = merge(diversity_index, chao_ace, by = "siteID")
+
+#plant_field_data = merge(diversity_index, plant_field_data, by = "siteID")
+#write.csv(plant_field_data, "plant_field_data.csv", row.names = FALSE)
+#richness = data.frame(plant_occ[, -c(2:467)])
+
+#plant_diversity_indices = cbind(diversity_index, richness)
+
+write.csv(plant_diversity_indices, "plant_div_indices.csv")
+```
+
+```{r}
+div = merge(plant_diversity_indices, bird_diversity_indices, by = "siteID")
+div = merge(div, beetle_diversity_indices, by = "siteID")
+write.csv(div, "diversity_index.csv")
+```
+
+###### There isn't a count for plants, it is more so a presence data
+```{r}
+#Plant occurrence only sorted by siteID
+#Quantify plant occurrence
+#Group by specific epithet and site ID
+plant_occ = plant_full_data1 %>%
+  tabyl(taxonID, siteID, sort = TRUE)
+
+
+#Show species distribution for each species for each site
+plant_occ = data.frame(t(plant_occ))
+
+#Put first row as header row
+names(plant_occ) <- as.matrix(plant_occ[1,])
+plant_occ = plant_occ[-1,]
+plant_occ[] <- lapply(plant_occ, function(x) type.convert(as.character((x))))
+
+#Count the number of non-zero cells for each row
+#This will give you the richness per site
+#This will appear in the final column of the dataset
+plant_occ$count <- rowSums(plant_occ!=0)
+
+#Rename the last column "count" as species richness
+names(plant_occ)[5625] = "species_richness"
+
+#Calculate total number organisms
+#Sum all rows except species_richness column
+row_sum = data.frame(rowSums(plant_occ[, -5625]))
+
+#rename column
+names(row_sum)[1] = "total_organisms"
+
+#rename 0th column
+plant_occ<-tibble::rownames_to_column(plant_occ, "siteID") 
+
+#rename 0th column
+row_sum<-tibble::rownames_to_column(row_sum, "siteID") 
+
+#merge row_sum dataframe with plant_occ dataframe by 
+plant_occ = merge(plant_occ, row_sum,
+                   by = "siteID",
+                   all = TRUE, check.duplicates = FALSE)
+
+#This new table now contains occurrence and richness values (last 2 columns)
+```
+
+###### Write Occurrence data to CSV file.
+```{r}
+write.csv(plant_occ, "plant_occ.csv", row.names = FALSE)
+```
+
+```{r}
+#Merge site information for interest site with species data
+plant_field_data = merge(plant_occ, site_info, by.x = "siteID", by.y = "field_site_id")
+
+#Export previous file
+write.csv(plant_field_data, "plant_field_data.csv", row.names = FALSE)
+
+#We used these tables in ArcGIS Pro to Make layers with species richness and total
+#number of species. This helps to visualize some of the diversity.
+#Still have to figure out of to graph it
+```
+
+###### Create another dataframe which contains diversity information
+###### Calculate Diversity indices using the Vegan Package in R
+```{r}
+plant_sp_div = t(plant_full_data1 %>%
+  tabyl(taxonID, siteID, sort = TRUE))
+
+#Convert to Data frame 
+plant_sp_div = data.frame(plant_sp_div)
+
+
+#Place specific epithet as row titles
+names(plant_sp_div) <- as.matrix(plant_sp_div[1,])
+plant_sp_div = plant_sp_div[-1,]
+plant_sp_div[] <- lapply(plant_sp_div, function(x) type.convert(as.character((x))))
+
+#Calculate Diversity Indices
+simpson_diversity = data.frame(diversity(plant_sp_div, "simpson"))
+simpson_diversity <-tibble::rownames_to_column(simpson_diversity, "siteID") 
+
+#Shannon Diversity
+shannon_diversity = data.frame(diversity(plant_sp_div, "shannon"))
+shannon_diversity <-tibble::rownames_to_column(shannon_diversity, "siteID") 
+
+#Merge all 3 diversity tables
+diversity_index = merge(shannon_diversity, simpson_diversity, by = "siteID")
+
+names(diversity_index)[2] = "shannon"
+names(diversity_index)[3] = "simpson"
+
+#merge richness (last 2 columns in plant_occ) and diversity indices
+richness = plant_occ[, c(1,5626,5627)]
+plant_diversity_indices = merge(diversity_index, richness, by = "siteID")
+write.csv(plant_diversity_indices, "plant_div_indices.csv")
+```

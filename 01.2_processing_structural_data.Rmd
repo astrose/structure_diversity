@@ -1,0 +1,3798 @@
+---
+title: "Processing DTMs, DSMs, CHMs for Structural Complexity Metrics"
+author: "1st Author"
+date: "2023-01-27"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+##### Here we will be processing the models we pulled from neon in 00.2
+##### Install Packages and Load libraries
+```{r, error=TRUE}
+#install.packages("neonUtilities")
+#install.packages("lidR")
+#install.packages("rgdal")
+#install.packages("gdalUtilities")
+#install.packages("data.table")
+#install.packages("docstring")
+#install.packages("installr")
+#devtools::install_github("carlos-alberto-silva/ForestGapR")
+#remotes::install_github("rspatial/terra")
+#install.packages("terra")
+#install.packages("ForestGapR")
+#install.packages("viridis")
+#install.packages("raster")
+#install.packages("gstat")
+
+# Load libraries
+library(terra)
+library(ForestGapR)
+library(viridis)
+library(raster)
+library(installr)
+library(lidR)
+library(neonUtilities)
+library(raster)
+library(gstat)
+library(rgdal)
+library(gdalUtilities)
+library(data.table)
+library(docstring)
+library(ggplot2)
+```
+
+##### Create function for determining canopy and terrain complexity
+###### Canopy complexity function altered from neon tutorial by Elizabeth A. Larue (since been archived by NEON): 
+```{r}
+#Canopy complexity
+chm_metrics = function(chm) {
+      mean.max.canopy.ht <- mean(chm@data@values, na.rm = TRUE)
+      max.canopy.ht <- max(chm@data@values, na.rm=TRUE)
+      percentile_95 <- quantile(chm@data@values, 0.95, na.rm = TRUE)
+      rumple <- rumple_index(chm) 
+      top.rugosity <- sd(chm@data@values, na.rm = TRUE) 
+      canopy.ruggedness.index <- cellStats((terrain(chm, opt = "TRI")), stat = "mean", na.rm = T)
+      canopy_roughness <- cellStats((terrain(chm, opt = "roughness")), stat = "mean", na.rm = T)
+      cells <- length(chm@data@values) 
+      chm.0 <- chm
+      chm.0[is.na(chm.0)] <- 0 
+      zeros <- which(chm.0@data@values == 0) 
+      deepgaps <- length(zeros) 
+      deepgap.fraction <- deepgaps/cells 
+      cover.fraction <- 1 - deepgap.fraction 
+      Zs <- chm@data@values
+      Zs <- Zs[!is.na(Zs)]
+      entro <- entropy(Zs, by = 1) #by 1m tall slices
+      gap_frac <- gap_fraction_profile(Zs, dz = 1, z0=0.5) #dz = 1m tall slices, and z0= minimum height of the forest
+      GFP.AOP <- mean(gap_frac$gf) 
+      LADen <- LAD(Zs, dz = 1, k=0.5, z0=0.5)
+      VAI <- sum(LADen$lad, na.rm=TRUE) 
+      VCI <- VCI(Zs, by = 1, zmax=100) 
+      out.plot <- data.frame(
+         matrix(c(mean.max.canopy.ht, max.canopy.ht, 
+               rumple, top.rugosity, deepgap.fraction, 
+               cover.fraction,  entro,  VAI, VCI, canopy.ruggedness.index, canopy_roughness, percentile_95),
+             ncol = 11)) 
+         colnames(out.plot) <- 
+      c("mean_max_canopy_ht",
+        "max_canopy_ht", "rumple", "rugosity", "deepgap_fraction", "cover_fraction", 'entropy',"veg_area_index", "vert_complexity", "CRI", "canopy_roughness", "h_95") 
+   print(out.plot)
+}
+```
+
+#Create function for digital terrain complexity metrics
+```{r}
+dtm_metrics = function(dtm) {
+  mean.elevation <- mean(dtm@data@values, na.rm = TRUE)
+  max.elevation <- max(dtm@data@values, na.rm=TRUE) 
+  ele.rugosity <- sd(dtm@data@values, na.rm = TRUE) 
+  Zs <- dtm@data@values
+  Zs <- Zs[!is.na(Zs)]
+  entro_ele <- entropy(Zs, by = 1) #by 1m tall slices
+      #dz = 1m tall slices, and z0= minimum height of the forest
+  terrain.ruggedness.index <- cellStats((terrain(dtm, opt = "TRI")), stat = "mean", na.rm = T)
+  roughness <- cellStats((terrain(dtm, opt = "roughness")), stat = "mean", na.rm = T)
+  slope <- cellStats((terrain(dtm, opt = "slope", unit = "degrees", neighbors = 8)), stat = "mean", na.rm = T)
+  cells <- length(dtm@data@values) 
+      Zs <- dtm@data@values
+      Zs <- Zs[!is.na(Zs)]
+      entro <- entropy(Zs, by = 1) 
+     out.plot <- data.frame(
+         matrix(c(mean.elevation, max.elevation, 
+               slope, roughness, terrain.ruggedness.index, entro_ele,
+               ele.rugosity),
+             ncol = 7)) 
+         colnames(out.plot) <- 
+      c("mean_elevation","max_elevation", "slope_in_deg", "roughness", "TRI", "elevation_entropy", "elevation_rugosity") 
+   print(out.plot)
+}
+```
+
+```{r}
+#Set min canopy height to whatever you want
+#I chose 0.5 so we could get shrubs and understory about a meter tall
+min = 0.5
+```
+
+#BLAN NEON Site
+```{r}
+#Read in full site and rasterize DTM and DSM
+dtm = raster(file.path("~/structure_models/blan/DEMs/2019_DTM.tif"))
+dsm = raster(file.path("~/structure_models/blan/DEMs/2019_DSM.tif"))
+
+#Create CHM
+chm = dsm-dtm
+
+#Cut out appropriate extent to smooth edges. This will limit errors when processing the data
+N_extent = extent(755000, 764000, 4325600, 4335999)
+
+#Clip rasters, set minimum for canopy height
+chm = crop(chm, N_extent)
+dtm = crop(dtm, N_extent)
+
+#Remove all values below 0.5m
+chm[chm <= min] <- NA
+
+#Plot DTM and CHM and save as #jpeg
+##jpeg(file = "BLAN_dtm.#jpeg", quality = 100)
+##plot(dtm, main = "DTM of Blandy Experimental Farm NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+##jpeg(file = "BLAN_chm.#jpeg", quality = 100)
+##plot(chm, main = "CHM of Blandy Experimental Farm NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+##dev.off()
+
+#Calculate complexity metrics
+#For 1m pixel size
+blan_dtm_metrics_1m = dtm_metrics(dtm)
+blan_chm_metrics_1m = chm_metrics(chm)
+
+#Aggregate chm to 
+#5m
+chm_5m = aggregate(chm, fact = 5)
+dtm_5m = aggregate(dtm, fact = 5)
+
+blan_dtm_metrics_5m = dtm_metrics(dtm_5m)
+blan_chm_metrics_5m = chm_metrics(chm_5m)
+
+#10m
+chm_10m = aggregate(chm, fact = 10)
+dtm_10m = aggregate(dtm, fact = 10)
+
+blan_dtm_metrics_10m = dtm_metrics(dtm_10m)
+blan_chm_metrics_10m = chm_metrics(chm_10m)
+
+#15m
+chm_15m = aggregate(chm, fact = 15)
+dtm_15m = aggregate(dtm, fact = 15)
+
+blan_dtm_metrics_15m = dtm_metrics(dtm_15m)
+blan_chm_metrics_15m = chm_metrics(chm_15m)
+
+#20m
+chm_20m = aggregate(chm, fact = 20)
+dtm_20m = aggregate(dtm, fact = 20)
+
+blan_dtm_metrics_20m = dtm_metrics(dtm_20m)
+blan_chm_metrics_20m = chm_metrics(chm_20m)
+
+#25m
+chm_25m = aggregate(chm, fact = 25)
+dtm_25m = aggregate(dtm, fact = 25)
+
+blan_dtm_metrics_25m = dtm_metrics(dtm_25m)
+blan_chm_metrics_25m = chm_metrics(chm_25m)
+
+#30m
+chm_30m = aggregate(chm, fact = 30)
+dtm_30m = aggregate(dtm, fact = 30)
+
+blan_dtm_metrics_30m = dtm_metrics(dtm_30m)
+blan_chm_metrics_30m = chm_metrics(chm_30m)
+
+#40m
+chm_40m = aggregate(chm, fact = 40)
+dtm_40m = aggregate(dtm, fact = 40)
+
+blan_dtm_metrics_40m = dtm_metrics(dtm_40m)
+blan_chm_metrics_40m = chm_metrics(chm_40m)
+
+#60m
+chm_60m = aggregate(chm, fact = 60)
+dtm_60m = aggregate(dtm, fact = 60)
+
+blan_dtm_metrics_60m = dtm_metrics(dtm_60m)
+blan_chm_metrics_60m = chm_metrics(chm_60m)
+
+#50m
+chm_50m = aggregate(chm, fact = 50)
+dtm_50m = aggregate(dtm, fact = 50)
+
+blan_dtm_metrics_50m = dtm_metrics(dtm_50m)
+blan_chm_metrics_50m = chm_metrics(chm_50m)
+
+#70m
+chm_70m = aggregate(chm, fact = 70)
+dtm_70m = aggregate(dtm, fact = 70)
+
+blan_dtm_metrics_70m = dtm_metrics(dtm_70m)
+blan_chm_metrics_70m = chm_metrics(chm_70m)
+
+#100m
+chm_100m = aggregate(chm, fact = 100)
+dtm_100m = aggregate(dtm, fact = 100)
+
+blan_dtm_metrics_100m = dtm_metrics(dtm_100m)
+blan_chm_metrics_100m = chm_metrics(chm_100m)
+```
+
+#CLBJ NEON Site
+```{r}
+dtm = raster(file.path("~/structure_models/clbj/DEMs/2019_DTM.tif"))
+dsm = raster(file.path("~/structure_models/clbj/DEMs/2019_DSM.tif"))
+
+chm = dsm-dtm
+
+N_extent = extent(624000, 635000, 3686950, 3698750)
+
+chm = crop(chm, N_extent)
+dtm = crop(dtm, N_extent)
+chm[chm <= min] <- NA
+
+#Plot DTM and CHM and save as #jpeg
+#jpeg(file = "CLBJ_dtm.#jpeg", quality = 100)
+#plot(dtm, main = "DTM of Lyndon B. Johnson National Grassland NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#jpeg(file =  "CLBJ_chm.#jpeg", quality = 100)
+#plot(chm, main = "CHM of Lyndon B. Johnson National Grassland NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#dev.off()
+
+#Calculate complexity metrics
+#For 1m pixel size
+clbj_dtm_metrics_1m = dtm_metrics(dtm)
+clbj_chm_metrics_1m = chm_metrics(chm)
+
+#Aggregate chm to 
+#5m
+chm_5m = aggregate(chm, fact = 5)
+dtm_5m = aggregate(dtm, fact = 5)
+
+clbj_dtm_metrics_5m = dtm_metrics(dtm_5m)
+clbj_chm_metrics_5m = chm_metrics(chm_5m)
+
+#10m
+chm_10m = aggregate(chm, fact = 10)
+dtm_10m = aggregate(dtm, fact = 10)
+
+clbj_dtm_metrics_10m = dtm_metrics(dtm_10m)
+clbj_chm_metrics_10m = chm_metrics(chm_10m)
+
+#15m
+chm_15m = aggregate(chm, fact = 15)
+dtm_15m = aggregate(dtm, fact = 15)
+
+clbj_dtm_metrics_15m = dtm_metrics(dtm_15m)
+clbj_chm_metrics_15m = chm_metrics(chm_15m)
+
+#20m
+chm_20m = aggregate(chm, fact = 20)
+dtm_20m = aggregate(dtm, fact = 20)
+
+clbj_dtm_metrics_20m = dtm_metrics(dtm_20m)
+clbj_chm_metrics_20m = chm_metrics(chm_20m)
+
+#25m
+chm_25m = aggregate(chm, fact = 25)
+dtm_25m = aggregate(dtm, fact = 25)
+
+clbj_dtm_metrics_25m = dtm_metrics(dtm_25m)
+clbj_chm_metrics_25m = chm_metrics(chm_25m)
+
+#30m
+chm_30m = aggregate(chm, fact = 30)
+dtm_30m = aggregate(dtm, fact = 30)
+
+clbj_dtm_metrics_30m = dtm_metrics(dtm_30m)
+clbj_chm_metrics_30m = chm_metrics(chm_30m)
+
+#40m
+chm_40m = aggregate(chm, fact = 40)
+dtm_40m = aggregate(dtm, fact = 40)
+
+clbj_dtm_metrics_40m = dtm_metrics(dtm_40m)
+clbj_chm_metrics_40m = chm_metrics(chm_40m)
+
+#60m
+chm_60m = aggregate(chm, fact = 60)
+dtm_60m = aggregate(dtm, fact = 60)
+
+clbj_dtm_metrics_60m = dtm_metrics(dtm_60m)
+clbj_chm_metrics_60m = chm_metrics(chm_60m)
+
+#50m
+chm_50m = aggregate(chm, fact = 50)
+dtm_50m = aggregate(dtm, fact = 50)
+
+clbj_dtm_metrics_50m = dtm_metrics(dtm_50m)
+clbj_chm_metrics_50m = chm_metrics(chm_50m)
+
+#70m
+chm_70m = aggregate(chm, fact = 70)
+dtm_70m = aggregate(dtm, fact = 70)
+
+clbj_dtm_metrics_70m = dtm_metrics(dtm_70m)
+clbj_chm_metrics_70m = chm_metrics(chm_70m)
+
+#100m
+chm_100m = aggregate(chm, fact = 100)
+dtm_100m = aggregate(dtm, fact = 100)
+
+clbj_dtm_metrics_100m = dtm_metrics(dtm_100m)
+clbj_chm_metrics_100m = chm_metrics(chm_100m)
+```
+
+#DELA
+```{r}
+dtm = raster(file.path("~/structure_models/dela/DEMs/DP3.30024.001_DTM.tif"))
+dsm = raster(file.path("~/structure_models/dela/DEMs/DP3.30024.001_DSM.tif"))
+
+chm = dsm-dtm
+
+N_extent = extent(416500, 429000, 3596800, 3607090)
+
+chm = crop(chm, N_extent)
+dtm = crop(dtm, N_extent)
+chm[chm <= min] <- NA
+
+#Plot DTM and CHM and save as #jpeg
+#jpeg(file = "DELA_dtm.#jpeg", quality = 100)
+#plot(dtm, main = "DTM of Dead Lake NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#jpeg(file =  "DELA_chm.#jpeg", quality = 100)
+#plot(chm, main = "CHM of Dead Lake NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#dev.off()
+
+#Calculate complexity metrics
+#For 1m pixel size
+dela_dtm_metrics_1m = dtm_metrics(dtm)
+dela_chm_metrics_1m = chm_metrics(chm)
+
+#Aggregate chm to 
+#5m
+chm_5m = aggregate(chm, fact = 5)
+dtm_5m = aggregate(dtm, fact = 5)
+
+dela_dtm_metrics_5m = dtm_metrics(dtm_5m)
+dela_chm_metrics_5m = chm_metrics(chm_5m)
+
+#10m
+chm_10m = aggregate(chm, fact = 10)
+dtm_10m = aggregate(dtm, fact = 10)
+
+dela_dtm_metrics_10m = dtm_metrics(dtm_10m)
+dela_chm_metrics_10m = chm_metrics(chm_10m)
+
+#15m
+chm_15m = aggregate(chm, fact = 15)
+dtm_15m = aggregate(dtm, fact = 15)
+
+dela_dtm_metrics_15m = dtm_metrics(dtm_15m)
+dela_chm_metrics_15m = chm_metrics(chm_15m)
+
+#20m
+chm_20m = aggregate(chm, fact = 20)
+dtm_20m = aggregate(dtm, fact = 20)
+
+dela_dtm_metrics_20m = dtm_metrics(dtm_20m)
+dela_chm_metrics_20m = chm_metrics(chm_20m)
+
+#25m
+chm_25m = aggregate(chm, fact = 25)
+dtm_25m = aggregate(dtm, fact = 25)
+
+dela_dtm_metrics_25m = dtm_metrics(dtm_25m)
+dela_chm_metrics_25m = chm_metrics(chm_25m)
+
+#30m
+chm_30m = aggregate(chm, fact = 30)
+dtm_30m = aggregate(dtm, fact = 30)
+
+dela_dtm_metrics_30m = dtm_metrics(dtm_30m)
+dela_chm_metrics_30m = chm_metrics(chm_30m)
+
+#40m
+chm_40m = aggregate(chm, fact = 40)
+dtm_40m = aggregate(dtm, fact = 40)
+
+dela_dtm_metrics_40m = dtm_metrics(dtm_40m)
+dela_chm_metrics_40m = chm_metrics(chm_40m)
+
+#60m
+chm_60m = aggregate(chm, fact = 60)
+dtm_60m = aggregate(dtm, fact = 60)
+
+dela_dtm_metrics_60m = dtm_metrics(dtm_60m)
+dela_chm_metrics_60m = chm_metrics(chm_60m)
+
+#50m
+chm_50m = aggregate(chm, fact = 50)
+dtm_50m = aggregate(dtm, fact = 50)
+
+dela_dtm_metrics_50m = dtm_metrics(dtm_50m)
+dela_chm_metrics_50m = chm_metrics(chm_50m)
+
+#70m
+chm_70m = aggregate(chm, fact = 70)
+dtm_70m = aggregate(dtm, fact = 70)
+
+dela_dtm_metrics_70m = dtm_metrics(dtm_70m)
+dela_chm_metrics_70m = chm_metrics(chm_70m)
+
+#100m
+chm_100m = aggregate(chm, fact = 100)
+dtm_100m = aggregate(dtm, fact = 100)
+
+dela_dtm_metrics_100m = dtm_metrics(dtm_100m)
+dela_chm_metrics_100m = chm_metrics(chm_100m)
+```
+
+#GUAN
+#Crop dtm and dsm because they are not the same size
+```{r}
+dtm = raster(file.path("~/structure_models/guan/DEMs/2018_DTM.tif"))
+dsm = raster(file.path("~/structure_models/guan/DEMs/2018_DSM.tif"))
+
+N_extent = extent(722000, 732900, 1985050, 1995000)
+
+dtm = crop(dtm, N_extent)
+dsm = crop(dsm, N_extent)
+
+chm = dsm-dtm
+chm[chm <= min] <- NA
+
+#Plot DTM and CHM and save as #jpeg
+#jpeg(file = "GUAN_dtm.#jpeg", quality = 100)
+#plot(dtm, main = "DTM of Guanica Forest NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#jpeg(file =  "GUAN_chm.#jpeg", quality = 100)
+#plot(chm, main = "CHM of Guanica Forest NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#dev.off()
+
+##Calculate complexity metrics
+#For 1m pixel size
+guan_dtm_metrics_1m = dtm_metrics(dtm)
+guan_chm_metrics_1m = chm_metrics(chm)
+
+#Aggregate chm to 
+#5m
+chm_5m = aggregate(chm, fact = 5)
+dtm_5m = aggregate(dtm, fact = 5)
+
+guan_dtm_metrics_5m = dtm_metrics(dtm_5m)
+guan_chm_metrics_5m = chm_metrics(chm_5m)
+
+#10m
+chm_10m = aggregate(chm, fact = 10)
+dtm_10m = aggregate(dtm, fact = 10)
+
+guan_dtm_metrics_10m = dtm_metrics(dtm_10m)
+guan_chm_metrics_10m = chm_metrics(chm_10m)
+
+#15m
+chm_15m = aggregate(chm, fact = 15)
+dtm_15m = aggregate(dtm, fact = 15)
+
+guan_dtm_metrics_15m = dtm_metrics(dtm_15m)
+guan_chm_metrics_15m = chm_metrics(chm_15m)
+
+#20m
+chm_20m = aggregate(chm, fact = 20)
+dtm_20m = aggregate(dtm, fact = 20)
+
+guan_dtm_metrics_20m = dtm_metrics(dtm_20m)
+guan_chm_metrics_20m = chm_metrics(chm_20m)
+
+#25m
+chm_25m = aggregate(chm, fact = 25)
+dtm_25m = aggregate(dtm, fact = 25)
+
+guan_dtm_metrics_25m = dtm_metrics(dtm_25m)
+guan_chm_metrics_25m = chm_metrics(chm_25m)
+
+#30m
+chm_30m = aggregate(chm, fact = 30)
+dtm_30m = aggregate(dtm, fact = 30)
+
+guan_dtm_metrics_30m = dtm_metrics(dtm_30m)
+guan_chm_metrics_30m = chm_metrics(chm_30m)
+
+#40m
+chm_40m = aggregate(chm, fact = 40)
+dtm_40m = aggregate(dtm, fact = 40)
+
+guan_dtm_metrics_40m = dtm_metrics(dtm_40m)
+guan_chm_metrics_40m = chm_metrics(chm_40m)
+
+#60m
+chm_60m = aggregate(chm, fact = 60)
+dtm_60m = aggregate(dtm, fact = 60)
+
+guan_dtm_metrics_60m = dtm_metrics(dtm_60m)
+guan_chm_metrics_60m = chm_metrics(chm_60m)
+
+#50m
+chm_50m = aggregate(chm, fact = 50)
+dtm_50m = aggregate(dtm, fact = 50)
+
+guan_dtm_metrics_50m = dtm_metrics(dtm_50m)
+guan_chm_metrics_50m = chm_metrics(chm_50m)
+
+#70m
+chm_70m = aggregate(chm, fact = 70)
+dtm_70m = aggregate(dtm, fact = 70)
+
+guan_dtm_metrics_70m = dtm_metrics(dtm_70m)
+guan_chm_metrics_70m = chm_metrics(chm_70m)
+
+#100m
+chm_100m = aggregate(chm, fact = 100)
+dtm_100m = aggregate(dtm, fact = 100)
+
+guan_dtm_metrics_100m = dtm_metrics(dtm_100m)
+guan_chm_metrics_100m = chm_metrics(chm_100m)
+```
+
+#HEAL NEON Site
+```{r}
+dtm = raster(file.path("~/structure_models/heal/DEMs/DP3.30024.001_DTM.tif"))
+dsm = raster(file.path("~/structure_models/heal/DEMs/DP3.30024.001_DSM.tif"))
+
+chm = dsm-dtm
+
+N_extent = extent(385900, 396000, 7079990, 7091090)
+
+chm = crop(chm, N_extent)
+dtm = crop(dtm, N_extent)
+chm[chm <= min] <- NA
+
+#Plot DTM and CHM and save as #jpeg
+#jpeg(file = "HEAL_dtm.#jpeg", quality = 100)
+#plot(dtm, main = "DTM of Healy NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#jpeg(file =  "HEAL_chm.#jpeg", quality = 100)
+#plot(chm, main = "CHM of Healy NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#dev.off()
+
+#Calculate complexity metrics
+#For 1m pixel size
+heal_dtm_metrics_1m = dtm_metrics(dtm)
+heal_chm_metrics_1m = chm_metrics(chm)
+
+#Aggregate chm to 
+#5m
+chm_5m = aggregate(chm, fact = 5)
+dtm_5m = aggregate(dtm, fact = 5)
+
+heal_dtm_metrics_5m = dtm_metrics(dtm_5m)
+heal_chm_metrics_5m = chm_metrics(chm_5m)
+
+#10m
+chm_10m = aggregate(chm, fact = 10)
+dtm_10m = aggregate(dtm, fact = 10)
+
+heal_dtm_metrics_10m = dtm_metrics(dtm_10m)
+heal_chm_metrics_10m = chm_metrics(chm_10m)
+
+#15m
+chm_15m = aggregate(chm, fact = 15)
+dtm_15m = aggregate(dtm, fact = 15)
+
+heal_dtm_metrics_15m = dtm_metrics(dtm_15m)
+heal_chm_metrics_15m = chm_metrics(chm_15m)
+
+#20m
+chm_20m = aggregate(chm, fact = 20)
+dtm_20m = aggregate(dtm, fact = 20)
+
+heal_dtm_metrics_20m = dtm_metrics(dtm_20m)
+heal_chm_metrics_20m = chm_metrics(chm_20m)
+
+#25m
+chm_25m = aggregate(chm, fact = 25)
+dtm_25m = aggregate(dtm, fact = 25)
+
+heal_dtm_metrics_25m = dtm_metrics(dtm_25m)
+heal_chm_metrics_25m = chm_metrics(chm_25m)
+
+#30m
+chm_30m = aggregate(chm, fact = 30)
+dtm_30m = aggregate(dtm, fact = 30)
+
+heal_dtm_metrics_30m = dtm_metrics(dtm_30m)
+heal_chm_metrics_30m = chm_metrics(chm_30m)
+
+#40m
+chm_40m = aggregate(chm, fact = 40)
+dtm_40m = aggregate(dtm, fact = 40)
+
+heal_dtm_metrics_40m = dtm_metrics(dtm_40m)
+heal_chm_metrics_40m = chm_metrics(chm_40m)
+
+#60m
+chm_60m = aggregate(chm, fact = 60)
+dtm_60m = aggregate(dtm, fact = 60)
+
+heal_dtm_metrics_60m = dtm_metrics(dtm_60m)
+heal_chm_metrics_60m = chm_metrics(chm_60m)
+
+#50m
+chm_50m = aggregate(chm, fact = 50)
+dtm_50m = aggregate(dtm, fact = 50)
+
+heal_dtm_metrics_50m = dtm_metrics(dtm_50m)
+heal_chm_metrics_50m = chm_metrics(chm_50m)
+
+#70m
+chm_70m = aggregate(chm, fact = 70)
+dtm_70m = aggregate(dtm, fact = 70)
+
+heal_dtm_metrics_70m = dtm_metrics(dtm_70m)
+heal_chm_metrics_70m = chm_metrics(chm_70m)
+
+#100m
+chm_100m = aggregate(chm, fact = 100)
+dtm_100m = aggregate(dtm, fact = 100)
+
+heal_dtm_metrics_100m = dtm_metrics(dtm_100m)
+heal_chm_metrics_100m = chm_metrics(chm_100m)
+```
+
+#KONZ NEON Site
+```{r}
+dtm = raster(file.path("~/structure_models/konz/DEMs/2020_DTM.tif"))
+dsm = raster(file.path("~/structure_models/konz/DEMs/2020_DSM.tif"))
+
+chm = dsm-dtm
+
+N_extent = extent(702800, 717000, 4326000, 4335100)
+
+chm = crop(chm, N_extent)
+dtm = crop(dtm, N_extent)
+chm[chm <= min] <- NA
+
+#Plot DTM and CHM and save as #jpeg
+#jpeg(file = "konz_dtm.#jpeg", quality = 100)
+#plot(dtm, main = "DTM of Konza Prairie Biological Station NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#jpeg(file =  "konz_chm.#jpeg", quality = 100)
+#plot(chm, main = "CHM of Konza Prairie Biological Station NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#dev.off()
+
+#Calculate complexity metrics
+#For 1m pixel size
+konz_dtm_metrics_1m = dtm_metrics(dtm)
+konz_chm_metrics_1m = chm_metrics(chm)
+
+#Aggregate chm to 
+#5m
+chm_5m = aggregate(chm, fact = 5)
+dtm_5m = aggregate(dtm, fact = 5)
+
+konz_dtm_metrics_5m = dtm_metrics(dtm_5m)
+konz_chm_metrics_5m = chm_metrics(chm_5m)
+
+#10m
+chm_10m = aggregate(chm, fact = 10)
+dtm_10m = aggregate(dtm, fact = 10)
+
+konz_dtm_metrics_10m = dtm_metrics(dtm_10m)
+konz_chm_metrics_10m = chm_metrics(chm_10m)
+
+#15m
+chm_15m = aggregate(chm, fact = 15)
+dtm_15m = aggregate(dtm, fact = 15)
+
+konz_dtm_metrics_15m = dtm_metrics(dtm_15m)
+konz_chm_metrics_15m = chm_metrics(chm_15m)
+
+#20m
+chm_20m = aggregate(chm, fact = 20)
+dtm_20m = aggregate(dtm, fact = 20)
+
+konz_dtm_metrics_20m = dtm_metrics(dtm_20m)
+konz_chm_metrics_20m = chm_metrics(chm_20m)
+
+#25m
+chm_25m = aggregate(chm, fact = 25)
+dtm_25m = aggregate(dtm, fact = 25)
+
+konz_dtm_metrics_25m = dtm_metrics(dtm_25m)
+konz_chm_metrics_25m = chm_metrics(chm_25m)
+
+#30m
+chm_30m = aggregate(chm, fact = 30)
+dtm_30m = aggregate(dtm, fact = 30)
+
+konz_dtm_metrics_30m = dtm_metrics(dtm_30m)
+konz_chm_metrics_30m = chm_metrics(chm_30m)
+
+#40m
+chm_40m = aggregate(chm, fact = 40)
+dtm_40m = aggregate(dtm, fact = 40)
+
+konz_dtm_metrics_40m = dtm_metrics(dtm_40m)
+konz_chm_metrics_40m = chm_metrics(chm_40m)
+
+#60m
+chm_60m = aggregate(chm, fact = 60)
+dtm_60m = aggregate(dtm, fact = 60)
+
+konz_dtm_metrics_60m = dtm_metrics(dtm_60m)
+konz_chm_metrics_60m = chm_metrics(chm_60m)
+
+#50m
+chm_50m = aggregate(chm, fact = 50)
+dtm_50m = aggregate(dtm, fact = 50)
+
+konz_dtm_metrics_50m = dtm_metrics(dtm_50m)
+konz_chm_metrics_50m = chm_metrics(chm_50m)
+
+#70m
+chm_70m = aggregate(chm, fact = 70)
+dtm_70m = aggregate(dtm, fact = 70)
+
+konz_dtm_metrics_70m = dtm_metrics(dtm_70m)
+konz_chm_metrics_70m = chm_metrics(chm_70m)
+
+#100m
+chm_100m = aggregate(chm, fact = 100)
+dtm_100m = aggregate(dtm, fact = 100)
+
+konz_dtm_metrics_100m = dtm_metrics(dtm_100m)
+konz_chm_metrics_100m = chm_metrics(chm_100m)
+```
+
+#LENO NEON Site
+```{r}
+dtm = raster(file.path("~/structure_models/leno/DEMs/2021_DTM.tif"))
+dsm = raster(file.path("~/structure_models/leno/DEMs/2021_DSM.tif"))
+
+chm = dsm-dtm
+
+N_extent = extent(383500, 393500, 3517500, 3528000)
+
+chm = crop(chm, N_extent)
+dtm = crop(dtm, N_extent)
+chm[chm <= min] <- NA
+
+#Plot DTM and CHM and save as #jpeg
+#jpeg(file = "LENO_dtm.#jpeg", quality = 100)
+#plot(dtm, main = "DTM of Lenoir Landing NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#jpeg(file =  "LENO_chm.#jpeg", quality = 100)
+#plot(chm, main = "CHM of Lenoir Landing NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#dev.off()
+
+#Calculate complexity metrics
+#For 1m pixel size
+leno_dtm_metrics_1m = dtm_metrics(dtm)
+leno_chm_metrics_1m = chm_metrics(chm)
+
+#Aggregate chm to 
+#5m
+chm_5m = aggregate(chm, fact = 5)
+dtm_5m = aggregate(dtm, fact = 5)
+
+leno_dtm_metrics_5m = dtm_metrics(dtm_5m)
+leno_chm_metrics_5m = chm_metrics(chm_5m)
+
+#10m
+chm_10m = aggregate(chm, fact = 10)
+dtm_10m = aggregate(dtm, fact = 10)
+
+leno_dtm_metrics_10m = dtm_metrics(dtm_10m)
+leno_chm_metrics_10m = chm_metrics(chm_10m)
+
+#15m
+chm_15m = aggregate(chm, fact = 15)
+dtm_15m = aggregate(dtm, fact = 15)
+
+leno_dtm_metrics_15m = dtm_metrics(dtm_15m)
+leno_chm_metrics_15m = chm_metrics(chm_15m)
+
+#20m
+chm_20m = aggregate(chm, fact = 20)
+dtm_20m = aggregate(dtm, fact = 20)
+
+leno_dtm_metrics_20m = dtm_metrics(dtm_20m)
+leno_chm_metrics_20m = chm_metrics(chm_20m)
+
+#25m
+chm_25m = aggregate(chm, fact = 25)
+dtm_25m = aggregate(dtm, fact = 25)
+
+leno_dtm_metrics_25m = dtm_metrics(dtm_25m)
+leno_chm_metrics_25m = chm_metrics(chm_25m)
+
+#30m
+chm_30m = aggregate(chm, fact = 30)
+dtm_30m = aggregate(dtm, fact = 30)
+
+leno_dtm_metrics_30m = dtm_metrics(dtm_30m)
+leno_chm_metrics_30m = chm_metrics(chm_30m)
+
+#40m
+chm_40m = aggregate(chm, fact = 40)
+dtm_40m = aggregate(dtm, fact = 40)
+
+leno_dtm_metrics_40m = dtm_metrics(dtm_40m)
+leno_chm_metrics_40m = chm_metrics(chm_40m)
+
+#60m
+chm_60m = aggregate(chm, fact = 60)
+dtm_60m = aggregate(dtm, fact = 60)
+
+leno_dtm_metrics_60m = dtm_metrics(dtm_60m)
+leno_chm_metrics_60m = chm_metrics(chm_60m)
+
+#50m
+chm_50m = aggregate(chm, fact = 50)
+dtm_50m = aggregate(dtm, fact = 50)
+
+leno_dtm_metrics_50m = dtm_metrics(dtm_50m)
+leno_chm_metrics_50m = chm_metrics(chm_50m)
+
+#70m
+chm_70m = aggregate(chm, fact = 70)
+dtm_70m = aggregate(dtm, fact = 70)
+
+leno_dtm_metrics_70m = dtm_metrics(dtm_70m)
+leno_chm_metrics_70m = chm_metrics(chm_70m)
+
+#100m
+chm_100m = aggregate(chm, fact = 100)
+dtm_100m = aggregate(dtm, fact = 100)
+
+leno_dtm_metrics_100m = dtm_metrics(dtm_100m)
+leno_chm_metrics_100m = chm_metrics(chm_100m)
+```
+
+#MLBS NEON Site
+```{r}
+dtm = raster(file.path("~/structure_models/mlbs/DEMs/2018_DTM.tif"))
+dsm = raster(file.path("~/structure_models/mlbs/DEMs/2018_DSM.tif"))
+
+chm = dsm-dtm
+
+N_extent = extent(536000, 545500, 4134500, 4143700)
+
+chm = crop(chm, N_extent)
+dtm = crop(dtm, N_extent)
+chm[chm <= min] <- NA
+
+#Plot DTM and CHM and save as #jpeg
+#jpeg(file = "MLBS_dtm.#jpeg", quality = 100)
+#plot(dtm, main = "DTM of Mountain Lake Biological Station NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#jpeg(file =  "MLBS_chm.#jpeg", quality = 100)
+#plot(chm, main = "CHM of Mountain Lake Biological Station NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#dev.off()
+
+#Calculate complexity metrics
+#For 1m pixel size
+mlbs_dtm_metrics_1m = dtm_metrics(dtm)
+mlbs_chm_metrics_1m = chm_metrics(chm)
+
+#Aggregate chm to 
+#5m
+chm_5m = aggregate(chm, fact = 5)
+dtm_5m = aggregate(dtm, fact = 5)
+
+mlbs_dtm_metrics_5m = dtm_metrics(dtm_5m)
+mlbs_chm_metrics_5m = chm_metrics(chm_5m)
+
+#10m
+chm_10m = aggregate(chm, fact = 10)
+dtm_10m = aggregate(dtm, fact = 10)
+
+mlbs_dtm_metrics_10m = dtm_metrics(dtm_10m)
+mlbs_chm_metrics_10m = chm_metrics(chm_10m)
+
+#15m
+chm_15m = aggregate(chm, fact = 15)
+dtm_15m = aggregate(dtm, fact = 15)
+
+mlbs_dtm_metrics_15m = dtm_metrics(dtm_15m)
+mlbs_chm_metrics_15m = chm_metrics(chm_15m)
+
+#20m
+chm_20m = aggregate(chm, fact = 20)
+dtm_20m = aggregate(dtm, fact = 20)
+
+mlbs_dtm_metrics_20m = dtm_metrics(dtm_20m)
+mlbs_chm_metrics_20m = chm_metrics(chm_20m)
+
+#25m
+chm_25m = aggregate(chm, fact = 25)
+dtm_25m = aggregate(dtm, fact = 25)
+
+mlbs_dtm_metrics_25m = dtm_metrics(dtm_25m)
+mlbs_chm_metrics_25m = chm_metrics(chm_25m)
+
+#30m
+chm_30m = aggregate(chm, fact = 30)
+dtm_30m = aggregate(dtm, fact = 30)
+
+mlbs_dtm_metrics_30m = dtm_metrics(dtm_30m)
+mlbs_chm_metrics_30m = chm_metrics(chm_30m)
+
+#40m
+chm_40m = aggregate(chm, fact = 40)
+dtm_40m = aggregate(dtm, fact = 40)
+
+mlbs_dtm_metrics_40m = dtm_metrics(dtm_40m)
+mlbs_chm_metrics_40m = chm_metrics(chm_40m)
+
+#60m
+chm_60m = aggregate(chm, fact = 60)
+dtm_60m = aggregate(dtm, fact = 60)
+
+mlbs_dtm_metrics_60m = dtm_metrics(dtm_60m)
+mlbs_chm_metrics_60m = chm_metrics(chm_60m)
+
+#50m
+chm_50m = aggregate(chm, fact = 50)
+dtm_50m = aggregate(dtm, fact = 50)
+
+mlbs_dtm_metrics_50m = dtm_metrics(dtm_50m)
+mlbs_chm_metrics_50m = chm_metrics(chm_50m)
+
+#70m
+chm_70m = aggregate(chm, fact = 70)
+dtm_70m = aggregate(dtm, fact = 70)
+
+mlbs_dtm_metrics_70m = dtm_metrics(dtm_70m)
+mlbs_chm_metrics_70m = chm_metrics(chm_70m)
+
+#100m
+chm_100m = aggregate(chm, fact = 100)
+dtm_100m = aggregate(dtm, fact = 100)
+
+mlbs_dtm_metrics_100m = dtm_metrics(dtm_100m)
+mlbs_chm_metrics_100m = chm_metrics(chm_100m)
+```
+
+#MOAB NEON Site
+```{r}
+dtm = raster(file.path("~/structure_models/moab/DEMs/2019_DTM.tif"))
+dsm = raster(file.path("~/structure_models/moab/DEMs/2019_DSM.tif"))
+
+chm = dsm-dtm
+
+N_extent = extent(637000, 646200, 4229000, 4239700)
+
+chm = crop(chm, N_extent)
+dtm = crop(dtm, N_extent)
+chm[chm <= min] <- NA
+
+#Plot DTM and CHM and save as #jpeg
+#jpeg(file = "MOAB_dtm.#jpeg", quality = 100)
+#plot(dtm, main = "DTM of Moab NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#jpeg(file =  "MOAB_chm.#jpeg", quality = 100)
+#plot(chm, main = "CHM of Moab NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#dev.off()
+
+#Calculate complexity metrics
+#For 1m pixel size
+moab_dtm_metrics_1m = dtm_metrics(dtm)
+moab_chm_metrics_1m = chm_metrics(chm)
+
+#Aggregate chm to 
+#5m
+chm_5m = aggregate(chm, fact = 5)
+dtm_5m = aggregate(dtm, fact = 5)
+
+moab_dtm_metrics_5m = dtm_metrics(dtm_5m)
+moab_chm_metrics_5m = chm_metrics(chm_5m)
+
+#10m
+chm_10m = aggregate(chm, fact = 10)
+dtm_10m = aggregate(dtm, fact = 10)
+
+moab_dtm_metrics_10m = dtm_metrics(dtm_10m)
+moab_chm_metrics_10m = chm_metrics(chm_10m)
+
+#15m
+chm_15m = aggregate(chm, fact = 15)
+dtm_15m = aggregate(dtm, fact = 15)
+
+moab_dtm_metrics_15m = dtm_metrics(dtm_15m)
+moab_chm_metrics_15m = chm_metrics(chm_15m)
+
+#20m
+chm_20m = aggregate(chm, fact = 20)
+dtm_20m = aggregate(dtm, fact = 20)
+
+moab_dtm_metrics_20m = dtm_metrics(dtm_20m)
+moab_chm_metrics_20m = chm_metrics(chm_20m)
+
+#25m
+chm_25m = aggregate(chm, fact = 25)
+dtm_25m = aggregate(dtm, fact = 25)
+
+moab_dtm_metrics_25m = dtm_metrics(dtm_25m)
+moab_chm_metrics_25m = chm_metrics(chm_25m)
+
+#30m
+chm_30m = aggregate(chm, fact = 30)
+dtm_30m = aggregate(dtm, fact = 30)
+
+moab_dtm_metrics_30m = dtm_metrics(dtm_30m)
+moab_chm_metrics_30m = chm_metrics(chm_30m)
+
+#40m
+chm_40m = aggregate(chm, fact = 40)
+dtm_40m = aggregate(dtm, fact = 40)
+
+moab_dtm_metrics_40m = dtm_metrics(dtm_40m)
+moab_chm_metrics_40m = chm_metrics(chm_40m)
+
+#60m
+chm_60m = aggregate(chm, fact = 60)
+dtm_60m = aggregate(dtm, fact = 60)
+
+moab_dtm_metrics_60m = dtm_metrics(dtm_60m)
+moab_chm_metrics_60m = chm_metrics(chm_60m)
+
+#50m
+chm_50m = aggregate(chm, fact = 50)
+dtm_50m = aggregate(dtm, fact = 50)
+
+moab_dtm_metrics_50m = dtm_metrics(dtm_50m)
+moab_chm_metrics_50m = chm_metrics(chm_50m)
+
+#70m
+chm_70m = aggregate(chm, fact = 70)
+dtm_70m = aggregate(dtm, fact = 70)
+
+moab_dtm_metrics_70m = dtm_metrics(dtm_70m)
+moab_chm_metrics_70m = chm_metrics(chm_70m)
+
+#100m
+chm_100m = aggregate(chm, fact = 100)
+dtm_100m = aggregate(dtm, fact = 100)
+
+moab_dtm_metrics_100m = dtm_metrics(dtm_100m)
+moab_chm_metrics_100m = chm_metrics(chm_100m)
+```
+
+#NIWO NEON Site
+```{r}
+dtm = raster(file.path("~/structure_models/niwo/DEMs/2020_DTM.tif"))
+dsm = raster(file.path("~/structure_models/niwo/DEMs/2020_DSM.tif"))
+
+chm = dsm-dtm
+
+N_extent = extent(448000, 457000, 4426000, 4436000)
+
+chm = crop(chm, N_extent)
+dtm = crop(dtm, N_extent)
+chm[chm <= min] <- NA
+
+#Plot DTM and CHM and save as #jpeg
+#jpeg(file = "NIWO_dtm.#jpeg", quality = 100)
+#plot(dtm, main = "DTM of Niwot Ridge NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#jpeg(file =  "NIWO_chm.#jpeg", quality = 100)
+#plot(chm, main = "CHM of Niwot Ridge NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#dev.off()
+
+#Calculate complexity metrics
+#For 1m pixel size
+niwo_dtm_metrics_1m = dtm_metrics(dtm)
+niwo_chm_metrics_1m = chm_metrics(chm)
+
+#Aggregate chm to 
+#5m
+chm_5m = aggregate(chm, fact = 5)
+dtm_5m = aggregate(dtm, fact = 5)
+
+niwo_dtm_metrics_5m = dtm_metrics(dtm_5m)
+niwo_chm_metrics_5m = chm_metrics(chm_5m)
+
+#10m
+chm_10m = aggregate(chm, fact = 10)
+dtm_10m = aggregate(dtm, fact = 10)
+
+niwo_dtm_metrics_10m = dtm_metrics(dtm_10m)
+niwo_chm_metrics_10m = chm_metrics(chm_10m)
+
+#15m
+chm_15m = aggregate(chm, fact = 15)
+dtm_15m = aggregate(dtm, fact = 15)
+
+niwo_dtm_metrics_15m = dtm_metrics(dtm_15m)
+niwo_chm_metrics_15m = chm_metrics(chm_15m)
+
+#20m
+chm_20m = aggregate(chm, fact = 20)
+dtm_20m = aggregate(dtm, fact = 20)
+
+niwo_dtm_metrics_20m = dtm_metrics(dtm_20m)
+niwo_chm_metrics_20m = chm_metrics(chm_20m)
+
+#25m
+chm_25m = aggregate(chm, fact = 25)
+dtm_25m = aggregate(dtm, fact = 25)
+
+niwo_dtm_metrics_25m = dtm_metrics(dtm_25m)
+niwo_chm_metrics_25m = chm_metrics(chm_25m)
+
+#30m
+chm_30m = aggregate(chm, fact = 30)
+dtm_30m = aggregate(dtm, fact = 30)
+
+niwo_dtm_metrics_30m = dtm_metrics(dtm_30m)
+niwo_chm_metrics_30m = chm_metrics(chm_30m)
+
+#40m
+chm_40m = aggregate(chm, fact = 40)
+dtm_40m = aggregate(dtm, fact = 40)
+
+niwo_dtm_metrics_40m = dtm_metrics(dtm_40m)
+niwo_chm_metrics_40m = chm_metrics(chm_40m)
+
+#60m
+chm_60m = aggregate(chm, fact = 60)
+dtm_60m = aggregate(dtm, fact = 60)
+
+niwo_dtm_metrics_60m = dtm_metrics(dtm_60m)
+niwo_chm_metrics_60m = chm_metrics(chm_60m)
+
+#50m
+chm_50m = aggregate(chm, fact = 50)
+dtm_50m = aggregate(dtm, fact = 50)
+
+niwo_dtm_metrics_50m = dtm_metrics(dtm_50m)
+niwo_chm_metrics_50m = chm_metrics(chm_50m)
+
+#70m
+chm_70m = aggregate(chm, fact = 70)
+dtm_70m = aggregate(dtm, fact = 70)
+
+niwo_dtm_metrics_70m = dtm_metrics(dtm_70m)
+niwo_chm_metrics_70m = chm_metrics(chm_70m)
+
+#100m
+chm_100m = aggregate(chm, fact = 100)
+dtm_100m = aggregate(dtm, fact = 100)
+
+niwo_dtm_metrics_100m = dtm_metrics(dtm_100m)
+niwo_chm_metrics_100m = chm_metrics(chm_100m)
+```
+
+#PUUM NEON Site
+```{r}
+dtm = raster(file.path("~/structure_models/puum/DEMs/DP3.30024.001_DTM.tif"))
+dsm = raster(file.path("~/structure_models/puum/DEMs/DP3.30024.001_DSM.tif"))
+
+chm = dsm-dtm
+N_extent = extent(245000, 267000, 2162000, 2167900)
+
+chm = crop(chm, N_extent)
+dtm = crop(dtm, N_extent)
+chm[chm <= min] <- NA
+
+#Plot DTM and CHM and save as #jpeg
+#jpeg(file = "PUUM_dtm.#jpeg", quality = 100)
+#plot(dtm, main = "DTM of Pu'u Maka'ala Natural Area Reserve NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#jpeg(file =  "PUUM_chm.#jpeg", quality = 100)
+#plot(chm, main = "CHM of Pu'u Maka'ala Natural Area Reserve NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#dev.off()
+
+#Calculate complexity metrics
+#For 1m pixel size
+puum_dtm_metrics_1m = dtm_metrics(dtm)
+puum_chm_metrics_1m = chm_metrics(chm)
+
+#Aggregate chm to 
+#5m
+chm_5m = aggregate(chm, fact = 5)
+dtm_5m = aggregate(dtm, fact = 5)
+
+puum_dtm_metrics_5m = dtm_metrics(dtm_5m)
+puum_chm_metrics_5m = chm_metrics(chm_5m)
+
+#10m
+chm_10m = aggregate(chm, fact = 10)
+dtm_10m = aggregate(dtm, fact = 10)
+
+puum_dtm_metrics_10m = dtm_metrics(dtm_10m)
+puum_chm_metrics_10m = chm_metrics(chm_10m)
+
+#15m
+chm_15m = aggregate(chm, fact = 15)
+dtm_15m = aggregate(dtm, fact = 15)
+
+puum_dtm_metrics_15m = dtm_metrics(dtm_15m)
+puum_chm_metrics_15m = chm_metrics(chm_15m)
+
+#20m
+chm_20m = aggregate(chm, fact = 20)
+dtm_20m = aggregate(dtm, fact = 20)
+
+puum_dtm_metrics_20m = dtm_metrics(dtm_20m)
+puum_chm_metrics_20m = chm_metrics(chm_20m)
+
+#25m
+chm_25m = aggregate(chm, fact = 25)
+dtm_25m = aggregate(dtm, fact = 25)
+
+puum_dtm_metrics_25m = dtm_metrics(dtm_25m)
+puum_chm_metrics_25m = chm_metrics(chm_25m)
+
+#30m
+chm_30m = aggregate(chm, fact = 30)
+dtm_30m = aggregate(dtm, fact = 30)
+
+puum_dtm_metrics_30m = dtm_metrics(dtm_30m)
+puum_chm_metrics_30m = chm_metrics(chm_30m)
+
+#40m
+chm_40m = aggregate(chm, fact = 40)
+dtm_40m = aggregate(dtm, fact = 40)
+
+puum_dtm_metrics_40m = dtm_metrics(dtm_40m)
+puum_chm_metrics_40m = chm_metrics(chm_40m)
+
+#60m
+chm_60m = aggregate(chm, fact = 60)
+dtm_60m = aggregate(dtm, fact = 60)
+
+puum_dtm_metrics_60m = dtm_metrics(dtm_60m)
+puum_chm_metrics_60m = chm_metrics(chm_60m)
+
+#50m
+chm_50m = aggregate(chm, fact = 50)
+dtm_50m = aggregate(dtm, fact = 50)
+
+puum_dtm_metrics_50m = dtm_metrics(dtm_50m)
+puum_chm_metrics_50m = chm_metrics(chm_50m)
+
+#70m
+chm_70m = aggregate(chm, fact = 70)
+dtm_70m = aggregate(dtm, fact = 70)
+
+puum_dtm_metrics_70m = dtm_metrics(dtm_70m)
+puum_chm_metrics_70m = chm_metrics(chm_70m)
+
+#100m
+chm_100m = aggregate(chm, fact = 100)
+dtm_100m = aggregate(dtm, fact = 100)
+
+puum_dtm_metrics_100m = dtm_metrics(dtm_100m)
+puum_chm_metrics_100m = chm_metrics(chm_100m)
+```
+
+#SCBI NEON Site
+```{r}
+dtm = raster(file.path("~/structure_models/scbi/DEMs/2019_DTM.tif"))
+dsm = raster(file.path("~/structure_models/scbi/DEMs/2019_DSM.tif"))
+
+chm = dsm-dtm
+
+N_extent = extent(742500, 752500, 4302000, 4311000)
+
+chm = crop(chm, N_extent)
+dtm = crop(dtm, N_extent)
+chm[chm <= min] <- NA
+
+#Plot DTM and CHM and save as #jpeg
+#jpeg(file = "SCBI_dtm.#jpeg", quality = 100)
+#plot(dtm, main = "DTM of Smithsonian Conservation Biology Institute NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#jpeg(file =  "SCBI_chm.#jpeg", quality = 100)
+#plot(chm, main = "CHM of Smithsonian Conservation Biology Insitute NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#dev.off()
+
+#Calculate complexity metrics
+#For 1m pixel size
+scbi_dtm_metrics_1m = dtm_metrics(dtm)
+scbi_chm_metrics_1m = chm_metrics(chm)
+
+#Aggregate chm to 
+#5m
+chm_5m = aggregate(chm, fact = 5)
+dtm_5m = aggregate(dtm, fact = 5)
+
+scbi_dtm_metrics_5m = dtm_metrics(dtm_5m)
+scbi_chm_metrics_5m = chm_metrics(chm_5m)
+
+#10m
+chm_10m = aggregate(chm, fact = 10)
+dtm_10m = aggregate(dtm, fact = 10)
+
+scbi_dtm_metrics_10m = dtm_metrics(dtm_10m)
+scbi_chm_metrics_10m = chm_metrics(chm_10m)
+
+#15m
+chm_15m = aggregate(chm, fact = 15)
+dtm_15m = aggregate(dtm, fact = 15)
+
+scbi_dtm_metrics_15m = dtm_metrics(dtm_15m)
+scbi_chm_metrics_15m = chm_metrics(chm_15m)
+
+#20m
+chm_20m = aggregate(chm, fact = 20)
+dtm_20m = aggregate(dtm, fact = 20)
+
+scbi_dtm_metrics_20m = dtm_metrics(dtm_20m)
+scbi_chm_metrics_20m = chm_metrics(chm_20m)
+
+#25m
+chm_25m = aggregate(chm, fact = 25)
+dtm_25m = aggregate(dtm, fact = 25)
+
+scbi_dtm_metrics_25m = dtm_metrics(dtm_25m)
+scbi_chm_metrics_25m = chm_metrics(chm_25m)
+
+#30m
+chm_30m = aggregate(chm, fact = 30)
+dtm_30m = aggregate(dtm, fact = 30)
+
+scbi_dtm_metrics_30m = dtm_metrics(dtm_30m)
+scbi_chm_metrics_30m = chm_metrics(chm_30m)
+
+#40m
+chm_40m = aggregate(chm, fact = 40)
+dtm_40m = aggregate(dtm, fact = 40)
+
+scbi_dtm_metrics_40m = dtm_metrics(dtm_40m)
+scbi_chm_metrics_40m = chm_metrics(chm_40m)
+
+#60m
+chm_60m = aggregate(chm, fact = 60)
+dtm_60m = aggregate(dtm, fact = 60)
+
+scbi_dtm_metrics_60m = dtm_metrics(dtm_60m)
+scbi_chm_metrics_60m = chm_metrics(chm_60m)
+
+#50m
+chm_50m = aggregate(chm, fact = 50)
+dtm_50m = aggregate(dtm, fact = 50)
+
+scbi_dtm_metrics_50m = dtm_metrics(dtm_50m)
+scbi_chm_metrics_50m = chm_metrics(chm_50m)
+
+#70m
+chm_70m = aggregate(chm, fact = 70)
+dtm_70m = aggregate(dtm, fact = 70)
+
+scbi_dtm_metrics_70m = dtm_metrics(dtm_70m)
+scbi_chm_metrics_70m = chm_metrics(chm_70m)
+
+#100m
+chm_100m = aggregate(chm, fact = 100)
+dtm_100m = aggregate(dtm, fact = 100)
+
+scbi_dtm_metrics_100m = dtm_metrics(dtm_100m)
+scbi_chm_metrics_100m = chm_metrics(chm_100m)
+```
+
+```{r}
+dtm = raster(file.path("~/structure_models/sjer/DEMs/2021_DTM.tif"))
+dsm = raster(file.path("~/structure_models/sjer/DEMs/2021_DSM.tif"))
+
+chm = dsm-dtm
+N_extent = extent(252000, 262000, 4102900, 4114000)
+
+chm = crop(chm, N_extent)
+dtm = crop(dtm, N_extent)
+chm[chm <= min] <- NA
+
+#Plot DTM and CHM and save as #jpeg
+#jpeg(file = "SJER_dtm.#jpeg", quality = 100)
+#plot(dtm, main = "DTM of San Joaquin Experimental Range NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#jpeg(file =  "SJER_chm.#jpeg", quality = 100)
+#plot(chm, main = "CHM of San Joaquin Experimental Range NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#dev.off()
+
+#Calculate complexity metrics
+#For 1m pixel size
+sjer_dtm_metrics_1m = dtm_metrics(dtm)
+sjer_chm_metrics_1m = chm_metrics(chm)
+
+#Aggregate chm to 
+#5m
+chm_5m = aggregate(chm, fact = 5)
+dtm_5m = aggregate(dtm, fact = 5)
+
+sjer_dtm_metrics_5m = dtm_metrics(dtm_5m)
+sjer_chm_metrics_5m = chm_metrics(chm_5m)
+
+#10m
+chm_10m = aggregate(chm, fact = 10)
+dtm_10m = aggregate(dtm, fact = 10)
+
+sjer_dtm_metrics_10m = dtm_metrics(dtm_10m)
+sjer_chm_metrics_10m = chm_metrics(chm_10m)
+
+#15m
+chm_15m = aggregate(chm, fact = 15)
+dtm_15m = aggregate(dtm, fact = 15)
+
+sjer_dtm_metrics_15m = dtm_metrics(dtm_15m)
+sjer_chm_metrics_15m = chm_metrics(chm_15m)
+
+#20m
+chm_20m = aggregate(chm, fact = 20)
+dtm_20m = aggregate(dtm, fact = 20)
+
+sjer_dtm_metrics_20m = dtm_metrics(dtm_20m)
+sjer_chm_metrics_20m = chm_metrics(chm_20m)
+
+#25m
+chm_25m = aggregate(chm, fact = 25)
+dtm_25m = aggregate(dtm, fact = 25)
+
+sjer_dtm_metrics_25m = dtm_metrics(dtm_25m)
+sjer_chm_metrics_25m = chm_metrics(chm_25m)
+
+#30m
+chm_30m = aggregate(chm, fact = 30)
+dtm_30m = aggregate(dtm, fact = 30)
+
+sjer_dtm_metrics_30m = dtm_metrics(dtm_30m)
+sjer_chm_metrics_30m = chm_metrics(chm_30m)
+
+#40m
+chm_40m = aggregate(chm, fact = 40)
+dtm_40m = aggregate(dtm, fact = 40)
+
+sjer_dtm_metrics_40m = dtm_metrics(dtm_40m)
+sjer_chm_metrics_40m = chm_metrics(chm_40m)
+
+#60m
+chm_60m = aggregate(chm, fact = 60)
+dtm_60m = aggregate(dtm, fact = 60)
+
+sjer_dtm_metrics_60m = dtm_metrics(dtm_60m)
+sjer_chm_metrics_60m = chm_metrics(chm_60m)
+
+#50m
+chm_50m = aggregate(chm, fact = 50)
+dtm_50m = aggregate(dtm, fact = 50)
+
+sjer_dtm_metrics_50m = dtm_metrics(dtm_50m)
+sjer_chm_metrics_50m = chm_metrics(chm_50m)
+
+#70m
+chm_70m = aggregate(chm, fact = 70)
+dtm_70m = aggregate(dtm, fact = 70)
+
+sjer_dtm_metrics_70m = dtm_metrics(dtm_70m)
+sjer_chm_metrics_70m = chm_metrics(chm_70m)
+
+#100m
+chm_100m = aggregate(chm, fact = 100)
+dtm_100m = aggregate(dtm, fact = 100)
+
+sjer_dtm_metrics_100m = dtm_metrics(dtm_100m)
+sjer_chm_metrics_100m = chm_metrics(chm_100m)
+```
+
+```{r}
+dtm = raster(file.path("~/structure_models/soap/DEMs/2019_DTM.tif"))
+dsm = raster(file.path("~/structure_models/soap/DEMs/2019_DSM.tif"))
+
+chm = dsm-dtm
+
+N_extent = extent(294900, 305200, 4098700, 4107000)
+
+chm = crop(chm, N_extent)
+dtm = crop(dtm, N_extent)
+chm[chm <= min] <- NA
+
+#Plot DTM and CHM and save as #jpeg
+#jpeg(file = "SOAP_dtm.#jpeg", quality = 100)
+#plot(dtm, main = "DTM of Soaproot Saddle NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#jpeg(file =  "SOAP_chm.#jpeg", quality = 100)
+#plot(chm, main = "CHM of Soaproot Saddle NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#dev.off()
+
+#Calculate complexity metrics
+#For 1m pixel size
+soap_dtm_metrics_1m = dtm_metrics(dtm)
+soap_chm_metrics_1m = chm_metrics(chm)
+
+#Aggregate chm to 
+#5m
+chm_5m = aggregate(chm, fact = 5)
+dtm_5m = aggregate(dtm, fact = 5)
+
+soap_dtm_metrics_5m = dtm_metrics(dtm_5m)
+soap_chm_metrics_5m = chm_metrics(chm_5m)
+
+#10m
+chm_10m = aggregate(chm, fact = 10)
+dtm_10m = aggregate(dtm, fact = 10)
+
+soap_dtm_metrics_10m = dtm_metrics(dtm_10m)
+soap_chm_metrics_10m = chm_metrics(chm_10m)
+
+#15m
+chm_15m = aggregate(chm, fact = 15)
+dtm_15m = aggregate(dtm, fact = 15)
+
+soap_dtm_metrics_15m = dtm_metrics(dtm_15m)
+soap_chm_metrics_15m = chm_metrics(chm_15m)
+
+#20m
+chm_20m = aggregate(chm, fact = 20)
+dtm_20m = aggregate(dtm, fact = 20)
+
+soap_dtm_metrics_20m = dtm_metrics(dtm_20m)
+soap_chm_metrics_20m = chm_metrics(chm_20m)
+
+#25m
+chm_25m = aggregate(chm, fact = 25)
+dtm_25m = aggregate(dtm, fact = 25)
+
+soap_dtm_metrics_25m = dtm_metrics(dtm_25m)
+soap_chm_metrics_25m = chm_metrics(chm_25m)
+
+#30m
+chm_30m = aggregate(chm, fact = 30)
+dtm_30m = aggregate(dtm, fact = 30)
+
+soap_dtm_metrics_30m = dtm_metrics(dtm_30m)
+soap_chm_metrics_30m = chm_metrics(chm_30m)
+
+#40m
+chm_40m = aggregate(chm, fact = 40)
+dtm_40m = aggregate(dtm, fact = 40)
+
+soap_dtm_metrics_40m = dtm_metrics(dtm_40m)
+soap_chm_metrics_40m = chm_metrics(chm_40m)
+
+#60m
+chm_60m = aggregate(chm, fact = 60)
+dtm_60m = aggregate(dtm, fact = 60)
+
+soap_dtm_metrics_60m = dtm_metrics(dtm_60m)
+soap_chm_metrics_60m = chm_metrics(chm_60m)
+
+#50m
+chm_50m = aggregate(chm, fact = 50)
+dtm_50m = aggregate(dtm, fact = 50)
+
+soap_dtm_metrics_50m = dtm_metrics(dtm_50m)
+soap_chm_metrics_50m = chm_metrics(chm_50m)
+
+#70m
+chm_70m = aggregate(chm, fact = 70)
+dtm_70m = aggregate(dtm, fact = 70)
+
+soap_dtm_metrics_70m = dtm_metrics(dtm_70m)
+soap_chm_metrics_70m = chm_metrics(chm_70m)
+
+#100m
+chm_100m = aggregate(chm, fact = 100)
+dtm_100m = aggregate(dtm, fact = 100)
+
+soap_dtm_metrics_100m = dtm_metrics(dtm_100m)
+soap_chm_metrics_100m = chm_metrics(chm_100m)
+```
+
+
+```{r}
+dtm = raster(file.path("~/structure_models/tall/DEMs/2021_DTM.tif"))
+
+dsm = raster(file.path("~/structure_models/tall/DEMs/2021_DSM.tif"))
+
+chm = dsm-dtm
+N_extent = extent(455200, 466000, 3637000, 3649900)
+
+chm = crop(chm, N_extent)
+dtm = crop(dtm, N_extent)
+chm[chm <= min] <- NA
+
+#Plot DTM and CHM and save as #jpeg
+#jpeg(file = "TALL_dtm.#jpeg", quality = 100)
+#plot(dtm, main = "DTM of Talladega National Forest NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#jpeg(file =  "TALL_chm.#jpeg", quality = 100)
+#plot(chm, main = "CHM of Talladega National Forest NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#dev.off()
+
+#Calculate complexity metrics
+#For 1m pixel size
+tall_dtm_metrics_1m = dtm_metrics(dtm)
+tall_chm_metrics_1m = chm_metrics(chm)
+
+#Aggregate chm to 
+#5m
+chm_5m = aggregate(chm, fact = 5)
+dtm_5m = aggregate(dtm, fact = 5)
+
+tall_dtm_metrics_5m = dtm_metrics(dtm_5m)
+tall_chm_metrics_5m = chm_metrics(chm_5m)
+
+#10m
+chm_10m = aggregate(chm, fact = 10)
+dtm_10m = aggregate(dtm, fact = 10)
+
+tall_dtm_metrics_10m = dtm_metrics(dtm_10m)
+tall_chm_metrics_10m = chm_metrics(chm_10m)
+
+#15m
+chm_15m = aggregate(chm, fact = 15)
+dtm_15m = aggregate(dtm, fact = 15)
+
+tall_dtm_metrics_15m = dtm_metrics(dtm_15m)
+tall_chm_metrics_15m = chm_metrics(chm_15m)
+
+#20m
+chm_20m = aggregate(chm, fact = 20)
+dtm_20m = aggregate(dtm, fact = 20)
+
+tall_dtm_metrics_20m = dtm_metrics(dtm_20m)
+tall_chm_metrics_20m = chm_metrics(chm_20m)
+
+#25m
+chm_25m = aggregate(chm, fact = 25)
+dtm_25m = aggregate(dtm, fact = 25)
+
+tall_dtm_metrics_25m = dtm_metrics(dtm_25m)
+tall_chm_metrics_25m = chm_metrics(chm_25m)
+
+#30m
+chm_30m = aggregate(chm, fact = 30)
+dtm_30m = aggregate(dtm, fact = 30)
+
+tall_dtm_metrics_30m = dtm_metrics(dtm_30m)
+tall_chm_metrics_30m = chm_metrics(chm_30m)
+
+#40m
+chm_40m = aggregate(chm, fact = 40)
+dtm_40m = aggregate(dtm, fact = 40)
+
+tall_dtm_metrics_40m = dtm_metrics(dtm_40m)
+tall_chm_metrics_40m = chm_metrics(chm_40m)
+
+#60m
+chm_60m = aggregate(chm, fact = 60)
+dtm_60m = aggregate(dtm, fact = 60)
+
+tall_dtm_metrics_60m = dtm_metrics(dtm_60m)
+tall_chm_metrics_60m = chm_metrics(chm_60m)
+
+#50m
+chm_50m = aggregate(chm, fact = 50)
+dtm_50m = aggregate(dtm, fact = 50)
+
+tall_dtm_metrics_50m = dtm_metrics(dtm_50m)
+tall_chm_metrics_50m = chm_metrics(chm_50m)
+
+#70m
+chm_70m = aggregate(chm, fact = 70)
+dtm_70m = aggregate(dtm, fact = 70)
+
+tall_dtm_metrics_70m = dtm_metrics(dtm_70m)
+tall_chm_metrics_70m = chm_metrics(chm_70m)
+
+#100m
+chm_100m = aggregate(chm, fact = 100)
+dtm_100m = aggregate(dtm, fact = 100)
+
+tall_dtm_metrics_100m = dtm_metrics(dtm_100m)
+tall_chm_metrics_100m = chm_metrics(chm_100m)
+```
+
+
+```{r}
+dtm = raster(file.path("~/structure_models/ukfs/DEMs/2020_DTM.tif"))
+dsm = raster(file.path("~/structure_models/ukfs/DEMs/2020_DSM.tif"))
+
+chm = dsm-dtm
+
+N_extent = extent(305700, 315000, 4320000, 4328000)
+
+chm = crop(chm, N_extent)
+dtm = crop(dtm, N_extent)
+chm[chm <= min] <- NA
+
+#Plot DTM and CHM and save as #jpeg
+#jpeg(file = "UKFS_dtm.#jpeg", quality = 100)
+#plot(dtm, main = "DTM of University of Kansas Field Station NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#jpeg(file =  "UKFS_chm.#jpeg", quality = 100)
+#plot(chm, main = "CHM of University of Kansas Field Station NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#dev.off()
+
+#Calculate complexity metrics
+#For 1m pixel size
+ukfs_dtm_metrics_1m = dtm_metrics(dtm)
+ukfs_chm_metrics_1m = chm_metrics(chm)
+
+#Aggregate chm to 
+#5m
+chm_5m = aggregate(chm, fact = 5)
+dtm_5m = aggregate(dtm, fact = 5)
+
+ukfs_dtm_metrics_5m = dtm_metrics(dtm_5m)
+ukfs_chm_metrics_5m = chm_metrics(chm_5m)
+
+#10m
+chm_10m = aggregate(chm, fact = 10)
+dtm_10m = aggregate(dtm, fact = 10)
+
+ukfs_dtm_metrics_10m = dtm_metrics(dtm_10m)
+ukfs_chm_metrics_10m = chm_metrics(chm_10m)
+
+#15m
+chm_15m = aggregate(chm, fact = 15)
+dtm_15m = aggregate(dtm, fact = 15)
+
+ukfs_dtm_metrics_15m = dtm_metrics(dtm_15m)
+ukfs_chm_metrics_15m = chm_metrics(chm_15m)
+
+#20m
+chm_20m = aggregate(chm, fact = 20)
+dtm_20m = aggregate(dtm, fact = 20)
+
+ukfs_dtm_metrics_20m = dtm_metrics(dtm_20m)
+ukfs_chm_metrics_20m = chm_metrics(chm_20m)
+
+#25m
+chm_25m = aggregate(chm, fact = 25)
+dtm_25m = aggregate(dtm, fact = 25)
+
+ukfs_dtm_metrics_25m = dtm_metrics(dtm_25m)
+ukfs_chm_metrics_25m = chm_metrics(chm_25m)
+
+#30m
+chm_30m = aggregate(chm, fact = 30)
+dtm_30m = aggregate(dtm, fact = 30)
+
+ukfs_dtm_metrics_30m = dtm_metrics(dtm_30m)
+ukfs_chm_metrics_30m = chm_metrics(chm_30m)
+
+#40m
+chm_40m = aggregate(chm, fact = 40)
+dtm_40m = aggregate(dtm, fact = 40)
+
+ukfs_dtm_metrics_40m = dtm_metrics(dtm_40m)
+ukfs_chm_metrics_40m = chm_metrics(chm_40m)
+
+#60m
+chm_60m = aggregate(chm, fact = 60)
+dtm_60m = aggregate(dtm, fact = 60)
+
+ukfs_dtm_metrics_60m = dtm_metrics(dtm_60m)
+ukfs_chm_metrics_60m = chm_metrics(chm_60m)
+
+#50m
+chm_50m = aggregate(chm, fact = 50)
+dtm_50m = aggregate(dtm, fact = 50)
+
+ukfs_dtm_metrics_50m = dtm_metrics(dtm_50m)
+ukfs_chm_metrics_50m = chm_metrics(chm_50m)
+
+#70m
+chm_70m = aggregate(chm, fact = 70)
+dtm_70m = aggregate(dtm, fact = 70)
+
+ukfs_dtm_metrics_70m = dtm_metrics(dtm_70m)
+ukfs_chm_metrics_70m = chm_metrics(chm_70m)
+
+#100m
+chm_100m = aggregate(chm, fact = 100)
+dtm_100m = aggregate(dtm, fact = 100)
+
+ukfs_dtm_metrics_100m = dtm_metrics(dtm_100m)
+ukfs_chm_metrics_100m = chm_metrics(chm_100m)
+```
+
+```{r}
+dtm = raster(file.path("~/structure_models/yell/DEMs/2020_DTM.tif"))
+dsm = raster(file.path("~/structure_models/yell/DEMs/2020_DSM.tif"))
+
+chm = dsm-dtm
+
+N_extent = extent(530350, 543610, 4972900, 4981300)
+
+chm = crop(chm, N_extent)
+dtm = crop(dtm, N_extent)
+chm[chm <= min] <- NA
+
+#Plot DTM and CHM and save as #jpeg
+#jpeg(file = "YELL_dtm.#jpeg", quality = 100)
+#plot(dtm, main = "DTM of Yellowstone National Park NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#jpeg(file =  "YELL_chm.#jpeg", quality = 100)
+#plot(chm, main = "CHM of Yellowstone National Park NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#dev.off()
+
+#plot(dtm)
+
+#Calculate complexity metrics
+#For 1m pixel size
+yell_dtm_metrics_1m = dtm_metrics(dtm)
+yell_chm_metrics_1m = chm_metrics(chm)
+
+#Aggregate chm to 
+#5m
+chm_5m = aggregate(chm, fact = 5)
+dtm_5m = aggregate(dtm, fact = 5)
+
+yell_dtm_metrics_5m = dtm_metrics(dtm_5m)
+yell_chm_metrics_5m = chm_metrics(chm_5m)
+
+#10m
+chm_10m = aggregate(chm, fact = 10)
+dtm_10m = aggregate(dtm, fact = 10)
+
+yell_dtm_metrics_10m = dtm_metrics(dtm_10m)
+yell_chm_metrics_10m = chm_metrics(chm_10m)
+
+#15m
+chm_15m = aggregate(chm, fact = 15)
+dtm_15m = aggregate(dtm, fact = 15)
+
+yell_dtm_metrics_15m = dtm_metrics(dtm_15m)
+yell_chm_metrics_15m = chm_metrics(chm_15m)
+
+#20m
+chm_20m = aggregate(chm, fact = 20)
+dtm_20m = aggregate(dtm, fact = 20)
+
+yell_dtm_metrics_20m = dtm_metrics(dtm_20m)
+yell_chm_metrics_20m = chm_metrics(chm_20m)
+
+#25m
+chm_25m = aggregate(chm, fact = 25)
+dtm_25m = aggregate(dtm, fact = 25)
+
+yell_dtm_metrics_25m = dtm_metrics(dtm_25m)
+yell_chm_metrics_25m = chm_metrics(chm_25m)
+
+#30m
+chm_30m = aggregate(chm, fact = 30)
+dtm_30m = aggregate(dtm, fact = 30)
+
+yell_dtm_metrics_30m = dtm_metrics(dtm_30m)
+yell_chm_metrics_30m = chm_metrics(chm_30m)
+
+#40m
+chm_40m = aggregate(chm, fact = 40)
+dtm_40m = aggregate(dtm, fact = 40)
+
+yell_dtm_metrics_40m = dtm_metrics(dtm_40m)
+yell_chm_metrics_40m = chm_metrics(chm_40m)
+
+#60m
+chm_60m = aggregate(chm, fact = 60)
+dtm_60m = aggregate(dtm, fact = 60)
+
+yell_dtm_metrics_60m = dtm_metrics(dtm_60m)
+yell_chm_metrics_60m = chm_metrics(chm_60m)
+
+#50m
+chm_50m = aggregate(chm, fact = 50)
+dtm_50m = aggregate(dtm, fact = 50)
+
+yell_dtm_metrics_50m = dtm_metrics(dtm_50m)
+yell_chm_metrics_50m = chm_metrics(chm_50m)
+
+#70m
+chm_70m = aggregate(chm, fact = 70)
+dtm_70m = aggregate(dtm, fact = 70)
+
+yell_dtm_metrics_70m = dtm_metrics(dtm_70m)
+yell_chm_metrics_70m = chm_metrics(chm_70m)
+
+#100m
+chm_100m = aggregate(chm, fact = 100)
+dtm_100m = aggregate(dtm, fact = 100)
+
+yell_dtm_metrics_100m = dtm_metrics(dtm_100m)
+yell_chm_metrics_100m = chm_metrics(chm_100m)
+```
+
+#ORNL
+```{r}
+dtm = raster(file.path("~/structure_models/ornl/DEMs/2018_DTM.tif"))
+dsm = raster(file.path("~/structure_models/ornl/DEMs/2018_DSM.tif"))
+
+chm = dsm-dtm
+
+N_extent = extent(735000, 747000, 3978000, 3984000)
+
+chm = crop(chm, N_extent)
+dtm = crop(dtm, N_extent)
+chm[chm <= min] <- NA
+
+#Plot DTM and CHM and save as #jpeg
+#jpeg(file = "ORNL_dtm.#jpeg", quality = 100)
+#plot(dtm, main = "DTM of Oak Ridge NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#jpeg(file =  "ORNL_chm.#jpeg", quality = 100)
+#plot(chm, main = "CHM of Oak Ridge NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#dev.off()
+
+#Calculate complexity metrics
+#For 1m pixel size
+ornl_dtm_metrics_1m = dtm_metrics(dtm)
+ornl_chm_metrics_1m = chm_metrics(chm)
+
+#Aggregate chm to 
+#5m
+chm_5m = aggregate(chm, fact = 5)
+dtm_5m = aggregate(dtm, fact = 5)
+
+ornl_dtm_metrics_5m = dtm_metrics(dtm_5m)
+ornl_chm_metrics_5m = chm_metrics(chm_5m)
+
+#10m
+chm_10m = aggregate(chm, fact = 10)
+dtm_10m = aggregate(dtm, fact = 10)
+
+ornl_dtm_metrics_10m = dtm_metrics(dtm_10m)
+ornl_chm_metrics_10m = chm_metrics(chm_10m)
+
+#15m
+chm_15m = aggregate(chm, fact = 15)
+dtm_15m = aggregate(dtm, fact = 15)
+
+ornl_dtm_metrics_15m = dtm_metrics(dtm_15m)
+ornl_chm_metrics_15m = chm_metrics(chm_15m)
+
+#20m
+chm_20m = aggregate(chm, fact = 20)
+dtm_20m = aggregate(dtm, fact = 20)
+
+ornl_dtm_metrics_20m = dtm_metrics(dtm_20m)
+ornl_chm_metrics_20m = chm_metrics(chm_20m)
+
+#25m
+chm_25m = aggregate(chm, fact = 25)
+dtm_25m = aggregate(dtm, fact = 25)
+
+ornl_dtm_metrics_25m = dtm_metrics(dtm_25m)
+ornl_chm_metrics_25m = chm_metrics(chm_25m)
+
+#30m
+chm_30m = aggregate(chm, fact = 30)
+dtm_30m = aggregate(dtm, fact = 30)
+
+ornl_dtm_metrics_30m = dtm_metrics(dtm_30m)
+ornl_chm_metrics_30m = chm_metrics(chm_30m)
+
+#40m
+chm_40m = aggregate(chm, fact = 40)
+dtm_40m = aggregate(dtm, fact = 40)
+
+ornl_dtm_metrics_40m = dtm_metrics(dtm_40m)
+ornl_chm_metrics_40m = chm_metrics(chm_40m)
+
+#60m
+chm_60m = aggregate(chm, fact = 60)
+dtm_60m = aggregate(dtm, fact = 60)
+
+ornl_dtm_metrics_60m = dtm_metrics(dtm_60m)
+ornl_chm_metrics_60m = chm_metrics(chm_60m)
+
+#50m
+chm_50m = aggregate(chm, fact = 50)
+dtm_50m = aggregate(dtm, fact = 50)
+
+ornl_dtm_metrics_50m = dtm_metrics(dtm_50m)
+ornl_chm_metrics_50m = chm_metrics(chm_50m)
+
+#70m
+chm_70m = aggregate(chm, fact = 70)
+dtm_70m = aggregate(dtm, fact = 70)
+
+ornl_dtm_metrics_70m = dtm_metrics(dtm_70m)
+ornl_chm_metrics_70m = chm_metrics(chm_70m)
+
+#100m
+chm_100m = aggregate(chm, fact = 100)
+dtm_100m = aggregate(dtm, fact = 100)
+
+ornl_dtm_metrics_100m = dtm_metrics(dtm_100m)
+ornl_chm_metrics_100m = chm_metrics(chm_100m)
+```
+
+
+```{r}
+dtm = raster(file.path("~/structure_models/unde/DEMs/2022_DTM.tif"))
+dsm = raster(file.path("~/structure_models/unde/DEMs/2022_DSM.tif"))
+
+chm = dsm-dtm
+
+#plot(chm)
+
+N_extent = extent(301050, 312150, 5113900, 5126700)
+
+chm = crop(chm, N_extent)
+dtm = crop(dtm, N_extent)
+chm[chm <= min] <- NA
+
+#Plot DTM and CHM and save as #jpeg
+#jpeg(file = "UNDE_dtm.#jpeg", quality = 100)
+#plot(dtm, main = "DTM of University of Notre Dame Environmental Research Center NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#jpeg(file =  "UNDE_chm.#jpeg", quality = 100)
+#plot(chm, main = "CHM of University of Notre Dame Environmental Research Center NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#dev.off()
+
+#Calculate complexity metrics
+#For 1m pixel size
+unde_dtm_metrics_1m = dtm_metrics(dtm)
+unde_chm_metrics_1m = chm_metrics(chm)
+
+#Aggregate chm to 
+#5m
+chm_5m = aggregate(chm, fact = 5)
+dtm_5m = aggregate(dtm, fact = 5)
+
+unde_dtm_metrics_5m = dtm_metrics(dtm_5m)
+unde_chm_metrics_5m = chm_metrics(chm_5m)
+
+#10m
+chm_10m = aggregate(chm, fact = 10)
+dtm_10m = aggregate(dtm, fact = 10)
+
+unde_dtm_metrics_10m = dtm_metrics(dtm_10m)
+unde_chm_metrics_10m = chm_metrics(chm_10m)
+
+#15m
+chm_15m = aggregate(chm, fact = 15)
+dtm_15m = aggregate(dtm, fact = 15)
+
+unde_dtm_metrics_15m = dtm_metrics(dtm_15m)
+unde_chm_metrics_15m = chm_metrics(chm_15m)
+
+#20m
+chm_20m = aggregate(chm, fact = 20)
+dtm_20m = aggregate(dtm, fact = 20)
+
+unde_dtm_metrics_20m = dtm_metrics(dtm_20m)
+unde_chm_metrics_20m = chm_metrics(chm_20m)
+
+#25m
+chm_25m = aggregate(chm, fact = 25)
+dtm_25m = aggregate(dtm, fact = 25)
+
+unde_dtm_metrics_25m = dtm_metrics(dtm_25m)
+unde_chm_metrics_25m = chm_metrics(chm_25m)
+
+#30m
+chm_30m = aggregate(chm, fact = 30)
+dtm_30m = aggregate(dtm, fact = 30)
+
+unde_dtm_metrics_30m = dtm_metrics(dtm_30m)
+unde_chm_metrics_30m = chm_metrics(chm_30m)
+
+#40m
+chm_40m = aggregate(chm, fact = 40)
+dtm_40m = aggregate(dtm, fact = 40)
+
+unde_dtm_metrics_40m = dtm_metrics(dtm_40m)
+unde_chm_metrics_40m = chm_metrics(chm_40m)
+
+#60m
+chm_60m = aggregate(chm, fact = 60)
+dtm_60m = aggregate(dtm, fact = 60)
+
+unde_dtm_metrics_60m = dtm_metrics(dtm_60m)
+unde_chm_metrics_60m = chm_metrics(chm_60m)
+
+#50m
+chm_50m = aggregate(chm, fact = 50)
+dtm_50m = aggregate(dtm, fact = 50)
+
+unde_dtm_metrics_50m = dtm_metrics(dtm_50m)
+unde_chm_metrics_50m = chm_metrics(chm_50m)
+
+#70m
+chm_70m = aggregate(chm, fact = 70)
+dtm_70m = aggregate(dtm, fact = 70)
+
+unde_dtm_metrics_70m = dtm_metrics(dtm_70m)
+unde_chm_metrics_70m = chm_metrics(chm_70m)
+
+#100m
+chm_100m = aggregate(chm, fact = 100)
+dtm_100m = aggregate(dtm, fact = 100)
+
+unde_dtm_metrics_100m = dtm_metrics(dtm_100m)
+unde_chm_metrics_100m = chm_metrics(chm_100m)
+```
+
+#BONA
+```{r}
+dtm = raster(file.path("~/structure_models/bona/DEMs/2021_DTM.tif"))
+dsm = raster(file.path("~/structure_models/bona/DEMs/2021_DSM.tif"))
+
+chm = dsm-dtm
+
+N_extent = extent(470100, 483400, 7222000, 7233400)
+
+chm = crop(chm, N_extent)
+dtm = crop(dtm, N_extent)
+chm[chm <= min] <- NA
+
+#Plot DTM and CHM and save as #jpeg
+#jpeg(file = "BONA_dtm.#jpeg", quality = 100)
+#plot(dtm, main = "DTM of University of Notre Dame Environmental Research Center NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#jpeg(file =  "BONA_chm.#jpeg", quality = 100)
+#plot(chm, main = "CHM of University of Notre Dame Environmental Research Center NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#dev.off()
+
+#Calculate complexity metrics
+#For 1m pixel size
+bona_dtm_metrics_1m = dtm_metrics(dtm)
+bona_chm_metrics_1m = chm_metrics(chm)
+
+#Aggregate chm to 
+#5m
+chm_5m = aggregate(chm, fact = 5)
+dtm_5m = aggregate(dtm, fact = 5)
+
+bona_dtm_metrics_5m = dtm_metrics(dtm_5m)
+bona_chm_metrics_5m = chm_metrics(chm_5m)
+
+#10m
+chm_10m = aggregate(chm, fact = 10)
+dtm_10m = aggregate(dtm, fact = 10)
+
+bona_dtm_metrics_10m = dtm_metrics(dtm_10m)
+bona_chm_metrics_10m = chm_metrics(chm_10m)
+
+#15m
+chm_15m = aggregate(chm, fact = 15)
+dtm_15m = aggregate(dtm, fact = 15)
+
+bona_dtm_metrics_15m = dtm_metrics(dtm_15m)
+bona_chm_metrics_15m = chm_metrics(chm_15m)
+
+#20m
+chm_20m = aggregate(chm, fact = 20)
+dtm_20m = aggregate(dtm, fact = 20)
+
+bona_dtm_metrics_20m = dtm_metrics(dtm_20m)
+bona_chm_metrics_20m = chm_metrics(chm_20m)
+
+#25m
+chm_25m = aggregate(chm, fact = 25)
+dtm_25m = aggregate(dtm, fact = 25)
+
+bona_dtm_metrics_25m = dtm_metrics(dtm_25m)
+bona_chm_metrics_25m = chm_metrics(chm_25m)
+
+#30m
+chm_30m = aggregate(chm, fact = 30)
+dtm_30m = aggregate(dtm, fact = 30)
+
+bona_dtm_metrics_30m = dtm_metrics(dtm_30m)
+bona_chm_metrics_30m = chm_metrics(chm_30m)
+
+#40m
+chm_40m = aggregate(chm, fact = 40)
+dtm_40m = aggregate(dtm, fact = 40)
+
+bona_dtm_metrics_40m = dtm_metrics(dtm_40m)
+bona_chm_metrics_40m = chm_metrics(chm_40m)
+
+#60m
+chm_60m = aggregate(chm, fact = 60)
+dtm_60m = aggregate(dtm, fact = 60)
+
+bona_dtm_metrics_60m = dtm_metrics(dtm_60m)
+bona_chm_metrics_60m = chm_metrics(chm_60m)
+
+#50m
+chm_50m = aggregate(chm, fact = 50)
+dtm_50m = aggregate(dtm, fact = 50)
+
+bona_dtm_metrics_50m = dtm_metrics(dtm_50m)
+bona_chm_metrics_50m = chm_metrics(chm_50m)
+
+#70m
+chm_70m = aggregate(chm, fact = 70)
+dtm_70m = aggregate(dtm, fact = 70)
+
+bona_dtm_metrics_70m = dtm_metrics(dtm_70m)
+bona_chm_metrics_70m = chm_metrics(chm_70m)
+
+#100m
+chm_100m = aggregate(chm, fact = 100)
+dtm_100m = aggregate(dtm, fact = 100)
+
+bona_dtm_metrics_100m = dtm_metrics(dtm_100m)
+bona_chm_metrics_100m = chm_metrics(chm_100m)
+```
+
+#DEJU
+```{r}
+dtm = raster(file.path("~/structure_models/deju/DEMs/2021_DTM.tif"))
+dsm = raster(file.path("~/structure_models/deju/DEMs/2021_DSM.tif"))
+
+chm = dsm-dtm
+
+N_extent = extent(559000, 568000, 7074000, 7089900)
+
+chm = crop(chm, N_extent)
+dtm = crop(dtm, N_extent)
+chm[chm <= min] <- NA
+
+
+#Plot DTM and CHM and save as #jpeg
+#jpeg(file = "DEJU_dtm.#jpeg", quality = 100)
+#plot(dtm, main = "DTM of Delta Junction NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#jpeg(file =  "DEJU_chm.#jpeg", quality = 100)
+#plot(chm, main = "CHM of Delta Junction NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#dev.off()
+
+#Calculate complexity metrics
+#For 1m pixel size
+deju_dtm_metrics_1m = dtm_metrics(dtm)
+deju_chm_metrics_1m = chm_metrics(chm)
+
+#Aggregate chm to 
+#5m
+chm_5m = aggregate(chm, fact = 5)
+dtm_5m = aggregate(dtm, fact = 5)
+
+deju_dtm_metrics_5m = dtm_metrics(dtm_5m)
+deju_chm_metrics_5m = chm_metrics(chm_5m)
+
+#10m
+chm_10m = aggregate(chm, fact = 10)
+dtm_10m = aggregate(dtm, fact = 10)
+
+deju_dtm_metrics_10m = dtm_metrics(dtm_10m)
+deju_chm_metrics_10m = chm_metrics(chm_10m)
+
+#15m
+chm_15m = aggregate(chm, fact = 15)
+dtm_15m = aggregate(dtm, fact = 15)
+
+deju_dtm_metrics_15m = dtm_metrics(dtm_15m)
+deju_chm_metrics_15m = chm_metrics(chm_15m)
+
+#20m
+chm_20m = aggregate(chm, fact = 20)
+dtm_20m = aggregate(dtm, fact = 20)
+
+deju_dtm_metrics_20m = dtm_metrics(dtm_20m)
+deju_chm_metrics_20m = chm_metrics(chm_20m)
+
+#25m
+chm_25m = aggregate(chm, fact = 25)
+dtm_25m = aggregate(dtm, fact = 25)
+
+deju_dtm_metrics_25m = dtm_metrics(dtm_25m)
+deju_chm_metrics_25m = chm_metrics(chm_25m)
+
+#30m
+chm_30m = aggregate(chm, fact = 30)
+dtm_30m = aggregate(dtm, fact = 30)
+
+deju_dtm_metrics_30m = dtm_metrics(dtm_30m)
+deju_chm_metrics_30m = chm_metrics(chm_30m)
+
+#40m
+chm_40m = aggregate(chm, fact = 40)
+dtm_40m = aggregate(dtm, fact = 40)
+
+deju_dtm_metrics_40m = dtm_metrics(dtm_40m)
+deju_chm_metrics_40m = chm_metrics(chm_40m)
+
+#60m
+chm_60m = aggregate(chm, fact = 60)
+dtm_60m = aggregate(dtm, fact = 60)
+
+deju_dtm_metrics_60m = dtm_metrics(dtm_60m)
+deju_chm_metrics_60m = chm_metrics(chm_60m)
+
+#50m
+chm_50m = aggregate(chm, fact = 50)
+dtm_50m = aggregate(dtm, fact = 50)
+
+deju_dtm_metrics_50m = dtm_metrics(dtm_50m)
+deju_chm_metrics_50m = chm_metrics(chm_50m)
+
+#70m
+chm_70m = aggregate(chm, fact = 70)
+dtm_70m = aggregate(dtm, fact = 70)
+
+deju_dtm_metrics_70m = dtm_metrics(dtm_70m)
+deju_chm_metrics_70m = chm_metrics(chm_70m)
+
+#100m
+chm_100m = aggregate(chm, fact = 100)
+dtm_100m = aggregate(dtm, fact = 100)
+
+deju_dtm_metrics_100m = dtm_metrics(dtm_100m)
+deju_chm_metrics_100m = chm_metrics(chm_100m)
+```
+
+
+```{r}
+dtm = raster(file.path("~/structure_models/rmnp/DEMs/DP3.30024.001_DTM.tif"))
+dsm = raster(file.path("~/structure_models/rmnp/DEMs/DP3.30024.001_DSM.tif"))
+
+chm = dsm-dtm
+
+N_extent = extent(452000, 461000, 4443500, 4458800)
+
+chm = crop(chm, N_extent)
+dtm = crop(dtm, N_extent)
+chm[chm <= min] <- NA
+
+#Plot DTM and CHM and save as #jpeg
+#jpeg(file = "RMNP_dtm.#jpeg", quality = 100)
+#plot(dtm, main = "DTM of Rocky Mountain NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#jpeg(file =  "RMNP_chm.#jpeg", quality = 100)
+#plot(chm, main = "CHM of Rocky Mountain NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#dev.off()
+
+#Calculate complexity metrics
+#For 1m pixel size
+rmnp_dtm_metrics_1m = dtm_metrics(dtm)
+rmnp_chm_metrics_1m = chm_metrics(chm)
+
+#Aggregate chm to 
+#5m
+chm_5m = aggregate(chm, fact = 5)
+dtm_5m = aggregate(dtm, fact = 5)
+
+rmnp_dtm_metrics_5m = dtm_metrics(dtm_5m)
+rmnp_chm_metrics_5m = chm_metrics(chm_5m)
+
+#10m
+chm_10m = aggregate(chm, fact = 10)
+dtm_10m = aggregate(dtm, fact = 10)
+
+rmnp_dtm_metrics_10m = dtm_metrics(dtm_10m)
+rmnp_chm_metrics_10m = chm_metrics(chm_10m)
+
+#15m
+chm_15m = aggregate(chm, fact = 15)
+dtm_15m = aggregate(dtm, fact = 15)
+
+rmnp_dtm_metrics_15m = dtm_metrics(dtm_15m)
+rmnp_chm_metrics_15m = chm_metrics(chm_15m)
+
+#20m
+chm_20m = aggregate(chm, fact = 20)
+dtm_20m = aggregate(dtm, fact = 20)
+
+rmnp_dtm_metrics_20m = dtm_metrics(dtm_20m)
+rmnp_chm_metrics_20m = chm_metrics(chm_20m)
+
+#25m
+chm_25m = aggregate(chm, fact = 25)
+dtm_25m = aggregate(dtm, fact = 25)
+
+rmnp_dtm_metrics_25m = dtm_metrics(dtm_25m)
+rmnp_chm_metrics_25m = chm_metrics(chm_25m)
+
+#30m
+chm_30m = aggregate(chm, fact = 30)
+dtm_30m = aggregate(dtm, fact = 30)
+
+rmnp_dtm_metrics_30m = dtm_metrics(dtm_30m)
+rmnp_chm_metrics_30m = chm_metrics(chm_30m)
+
+#40m
+chm_40m = aggregate(chm, fact = 40)
+dtm_40m = aggregate(dtm, fact = 40)
+
+rmnp_dtm_metrics_40m = dtm_metrics(dtm_40m)
+rmnp_chm_metrics_40m = chm_metrics(chm_40m)
+
+#60m
+chm_60m = aggregate(chm, fact = 60)
+dtm_60m = aggregate(dtm, fact = 60)
+
+rmnp_dtm_metrics_60m = dtm_metrics(dtm_60m)
+rmnp_chm_metrics_60m = chm_metrics(chm_60m)
+
+#50m
+chm_50m = aggregate(chm, fact = 50)
+dtm_50m = aggregate(dtm, fact = 50)
+
+rmnp_dtm_metrics_50m = dtm_metrics(dtm_50m)
+rmnp_chm_metrics_50m = chm_metrics(chm_50m)
+
+#70m
+chm_70m = aggregate(chm, fact = 70)
+dtm_70m = aggregate(dtm, fact = 70)
+
+rmnp_dtm_metrics_70m = dtm_metrics(dtm_70m)
+rmnp_chm_metrics_70m = chm_metrics(chm_70m)
+
+#100m
+chm_100m = aggregate(chm, fact = 100)
+dtm_100m = aggregate(dtm, fact = 100)
+
+rmnp_dtm_metrics_100m = dtm_metrics(dtm_100m)
+rmnp_chm_metrics_100m = chm_metrics(chm_100m)
+```
+
+```{r}
+dtm = raster(file.path("~/structure_models/osbs/DEMs/2019_DTM.tif"))
+dsm = raster(file.path("~/structure_models/osbs/DEMs/2019_DSM.tif"))
+
+chm = dsm-dtm
+
+N_extent = extent(399000, 409000, 3280000, 3287850)
+
+chm = crop(chm, N_extent)
+dtm = crop(dtm, N_extent)
+chm[chm <= min] <- NA
+
+#Plot DTM and CHM and save as #jpeg
+#jpeg(file = "OSBS_dtm.#jpeg", quality = 100)
+#plot(dtm, main = "DTM of Ordway-Swisher Biological Station NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#jpeg(file =  "OSBS_chm.#jpeg", quality = 100)
+#plot(chm, main = "CHM of Ordway-Swisher Biological Station NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#dev.off()
+
+#Calculate complexity metrics
+#For 1m pixel size
+osbs_dtm_metrics_1m = dtm_metrics(dtm)
+osbs_chm_metrics_1m = chm_metrics(chm)
+
+#Aggregate chm to 
+#5m
+chm_5m = aggregate(chm, fact = 5)
+dtm_5m = aggregate(dtm, fact = 5)
+
+osbs_dtm_metrics_5m = dtm_metrics(dtm_5m)
+osbs_chm_metrics_5m = chm_metrics(chm_5m)
+
+#10m
+chm_10m = aggregate(chm, fact = 10)
+dtm_10m = aggregate(dtm, fact = 10)
+
+osbs_dtm_metrics_10m = dtm_metrics(dtm_10m)
+osbs_chm_metrics_10m = chm_metrics(chm_10m)
+
+#15m
+chm_15m = aggregate(chm, fact = 15)
+dtm_15m = aggregate(dtm, fact = 15)
+
+osbs_dtm_metrics_15m = dtm_metrics(dtm_15m)
+osbs_chm_metrics_15m = chm_metrics(chm_15m)
+
+#20m
+chm_20m = aggregate(chm, fact = 20)
+dtm_20m = aggregate(dtm, fact = 20)
+
+osbs_dtm_metrics_20m = dtm_metrics(dtm_20m)
+osbs_chm_metrics_20m = chm_metrics(chm_20m)
+
+#25m
+chm_25m = aggregate(chm, fact = 25)
+dtm_25m = aggregate(dtm, fact = 25)
+
+osbs_dtm_metrics_25m = dtm_metrics(dtm_25m)
+osbs_chm_metrics_25m = chm_metrics(chm_25m)
+
+#30m
+chm_30m = aggregate(chm, fact = 30)
+dtm_30m = aggregate(dtm, fact = 30)
+
+osbs_dtm_metrics_30m = dtm_metrics(dtm_30m)
+osbs_chm_metrics_30m = chm_metrics(chm_30m)
+
+#40m
+chm_40m = aggregate(chm, fact = 40)
+dtm_40m = aggregate(dtm, fact = 40)
+
+osbs_dtm_metrics_40m = dtm_metrics(dtm_40m)
+osbs_chm_metrics_40m = chm_metrics(chm_40m)
+
+#60m
+chm_60m = aggregate(chm, fact = 60)
+dtm_60m = aggregate(dtm, fact = 60)
+
+osbs_dtm_metrics_60m = dtm_metrics(dtm_60m)
+osbs_chm_metrics_60m = chm_metrics(chm_60m)
+
+#50m
+chm_50m = aggregate(chm, fact = 50)
+dtm_50m = aggregate(dtm, fact = 50)
+
+osbs_dtm_metrics_50m = dtm_metrics(dtm_50m)
+osbs_chm_metrics_50m = chm_metrics(chm_50m)
+
+#70m
+chm_70m = aggregate(chm, fact = 70)
+dtm_70m = aggregate(dtm, fact = 70)
+
+osbs_dtm_metrics_70m = dtm_metrics(dtm_70m)
+osbs_chm_metrics_70m = chm_metrics(chm_70m)
+
+#100m
+chm_100m = aggregate(chm, fact = 100)
+dtm_100m = aggregate(dtm, fact = 100)
+
+osbs_dtm_metrics_100m = dtm_metrics(dtm_100m)
+osbs_chm_metrics_100m = chm_metrics(chm_100m)
+```
+
+
+```{r}
+dtm = raster(file.path("~/structure_models/serc/DEMs/2019_DTM.tif"))
+dsm = raster(file.path("~/structure_models/serc/DEMs/2019_DSM.tif"))
+
+chm = dsm-dtm
+N_extent = extent(359100, 369000, 4301000, 4309500)
+
+chm = crop(chm, N_extent)
+dtm = crop(dtm, N_extent)
+chm[chm <= min] <- NA
+
+#Plot DTM and CHM and save as #jpeg
+#jpeg(file = "SERC_dtm.#jpeg", quality = 100)
+#plot(dtm, main = "DTM of Smithsonian Environmental Research Center NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#jpeg(file =  "SERC_chm.#jpeg", quality = 100)
+#plot(chm, main = "CHM of Smithsonian Environmental Research Center NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#dev.off()
+
+#Calculate complexity metrics
+#For 1m pixel size
+serc_dtm_metrics_1m = dtm_metrics(dtm)
+serc_chm_metrics_1m = chm_metrics(chm)
+
+#Aggregate chm to 
+#5m
+chm_5m = aggregate(chm, fact = 5)
+dtm_5m = aggregate(dtm, fact = 5)
+
+serc_dtm_metrics_5m = dtm_metrics(dtm_5m)
+serc_chm_metrics_5m = chm_metrics(chm_5m)
+
+#10m
+chm_10m = aggregate(chm, fact = 10)
+dtm_10m = aggregate(dtm, fact = 10)
+
+serc_dtm_metrics_10m = dtm_metrics(dtm_10m)
+serc_chm_metrics_10m = chm_metrics(chm_10m)
+
+#15m
+chm_15m = aggregate(chm, fact = 15)
+dtm_15m = aggregate(dtm, fact = 15)
+
+serc_dtm_metrics_15m = dtm_metrics(dtm_15m)
+serc_chm_metrics_15m = chm_metrics(chm_15m)
+
+#20m
+chm_20m = aggregate(chm, fact = 20)
+dtm_20m = aggregate(dtm, fact = 20)
+
+serc_dtm_metrics_20m = dtm_metrics(dtm_20m)
+serc_chm_metrics_20m = chm_metrics(chm_20m)
+
+#25m
+chm_25m = aggregate(chm, fact = 25)
+dtm_25m = aggregate(dtm, fact = 25)
+
+serc_dtm_metrics_25m = dtm_metrics(dtm_25m)
+serc_chm_metrics_25m = chm_metrics(chm_25m)
+
+#30m
+chm_30m = aggregate(chm, fact = 30)
+dtm_30m = aggregate(dtm, fact = 30)
+
+serc_dtm_metrics_30m = dtm_metrics(dtm_30m)
+serc_chm_metrics_30m = chm_metrics(chm_30m)
+
+#40m
+chm_40m = aggregate(chm, fact = 40)
+dtm_40m = aggregate(dtm, fact = 40)
+
+serc_dtm_metrics_40m = dtm_metrics(dtm_40m)
+serc_chm_metrics_40m = chm_metrics(chm_40m)
+
+#60m
+chm_60m = aggregate(chm, fact = 60)
+dtm_60m = aggregate(dtm, fact = 60)
+
+serc_dtm_metrics_60m = dtm_metrics(dtm_60m)
+serc_chm_metrics_60m = chm_metrics(chm_60m)
+
+#50m
+chm_50m = aggregate(chm, fact = 50)
+dtm_50m = aggregate(dtm, fact = 50)
+
+serc_dtm_metrics_50m = dtm_metrics(dtm_50m)
+serc_chm_metrics_50m = chm_metrics(chm_50m)
+
+#70m
+chm_70m = aggregate(chm, fact = 70)
+dtm_70m = aggregate(dtm, fact = 70)
+
+serc_dtm_metrics_70m = dtm_metrics(dtm_70m)
+serc_chm_metrics_70m = chm_metrics(chm_70m)
+
+#100m
+chm_100m = aggregate(chm, fact = 100)
+dtm_100m = aggregate(dtm, fact = 100)
+
+serc_dtm_metrics_100m = dtm_metrics(dtm_100m)
+serc_chm_metrics_100m = chm_metrics(chm_100m)
+```
+
+
+```{r}
+dtm = raster(file.path("~/structure_models/onaq/DEMs/2022_DTM.tif"))
+dsm = raster(file.path("~/structure_models/onaq/DEMs/2022_DSM.tif"))
+
+chm = dsm-dtm
+#plot(chm)
+N_extent = extent(367000, 380000, 4444900, 4455000)
+
+chm = crop(chm, N_extent)
+dtm = crop(dtm, N_extent)
+chm[chm <= min] <- NA
+
+#Plot DTM and CHM and save as #jpeg
+##jpeg(file = "ONAQ_dtm.#jpeg", quality = 100)
+##plot(dtm, main = "DTM of Onaqui NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+##jpeg(file =  "ONAQ_chm.#jpeg", quality = 100)
+##plot(chm, main = "CHM of Onaqui NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+##dev.off()
+
+#Calculate complexity metrics
+#For 1m pixel size
+onaq_dtm_metrics_1m = dtm_metrics(dtm)
+onaq_chm_metrics_1m = chm_metrics(chm)
+
+#Aggregate chm to 
+#5m
+chm_5m = aggregate(chm, fact = 5)
+dtm_5m = aggregate(dtm, fact = 5)
+
+onaq_dtm_metrics_5m = dtm_metrics(dtm_5m)
+onaq_chm_metrics_5m = chm_metrics(chm_5m)
+
+#10m
+chm_10m = aggregate(chm, fact = 10)
+dtm_10m = aggregate(dtm, fact = 10)
+
+onaq_dtm_metrics_10m = dtm_metrics(dtm_10m)
+onaq_chm_metrics_10m = chm_metrics(chm_10m)
+
+#15m
+chm_15m = aggregate(chm, fact = 15)
+dtm_15m = aggregate(dtm, fact = 15)
+
+onaq_dtm_metrics_15m = dtm_metrics(dtm_15m)
+onaq_chm_metrics_15m = chm_metrics(chm_15m)
+
+#20m
+chm_20m = aggregate(chm, fact = 20)
+dtm_20m = aggregate(dtm, fact = 20)
+
+onaq_dtm_metrics_20m = dtm_metrics(dtm_20m)
+onaq_chm_metrics_20m = chm_metrics(chm_20m)
+
+#25m
+chm_25m = aggregate(chm, fact = 25)
+dtm_25m = aggregate(dtm, fact = 25)
+
+onaq_dtm_metrics_25m = dtm_metrics(dtm_25m)
+onaq_chm_metrics_25m = chm_metrics(chm_25m)
+
+#30m
+chm_30m = aggregate(chm, fact = 30)
+dtm_30m = aggregate(dtm, fact = 30)
+
+onaq_dtm_metrics_30m = dtm_metrics(dtm_30m)
+onaq_chm_metrics_30m = chm_metrics(chm_30m)
+
+#40m
+chm_40m = aggregate(chm, fact = 40)
+dtm_40m = aggregate(dtm, fact = 40)
+
+onaq_dtm_metrics_40m = dtm_metrics(dtm_40m)
+onaq_chm_metrics_40m = chm_metrics(chm_40m)
+
+#60m
+chm_60m = aggregate(chm, fact = 60)
+dtm_60m = aggregate(dtm, fact = 60)
+
+onaq_dtm_metrics_60m = dtm_metrics(dtm_60m)
+onaq_chm_metrics_60m = chm_metrics(chm_60m)
+
+#50m
+chm_50m = aggregate(chm, fact = 50)
+dtm_50m = aggregate(dtm, fact = 50)
+
+onaq_dtm_metrics_50m = dtm_metrics(dtm_50m)
+onaq_chm_metrics_50m = chm_metrics(chm_50m)
+
+#70m
+chm_70m = aggregate(chm, fact = 70)
+dtm_70m = aggregate(dtm, fact = 70)
+
+onaq_dtm_metrics_70m = dtm_metrics(dtm_70m)
+onaq_chm_metrics_70m = chm_metrics(chm_70m)
+
+#100m
+chm_100m = aggregate(chm, fact = 100)
+dtm_100m = aggregate(dtm, fact = 100)
+
+onaq_dtm_metrics_100m = dtm_metrics(dtm_100m)
+onaq_chm_metrics_100m = chm_metrics(chm_100m)
+```
+
+
+
+```{r}
+dtm = raster(file.path("~/structure_models/stei/DEMs/DP3.30024.001_DTM.tif"))
+dsm = raster(file.path("~/structure_models/stei/DEMs/DP3.30024.001_DSM.tif"))
+
+chm = dsm-dtm
+
+N_extent = extent(296000, 306000, 5035500, 5045800)
+
+chm = crop(chm, N_extent)
+dtm = crop(dtm, N_extent)
+chm[chm <= min] <- NA
+
+#Plot DTM and CHM and save as #jpeg
+##jpeg(file = "STEI_dtm.#jpeg", quality = 100)
+##plot(dtm, main = "DTM of Steigerwaldt-Chequamegon NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+##jpeg(file =  "STEI_chm.#jpeg", quality = 100)
+##plot(chm, main = "CHM of Steigerwaldt-Chequamegon NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+##dev.off()
+
+#Calculate complexity metrics
+#For 1m pixel size
+stei_dtm_metrics_1m = dtm_metrics(dtm)
+stei_chm_metrics_1m = chm_metrics(chm)
+
+#Aggregate chm to 
+#5m
+chm_5m = aggregate(chm, fact = 5)
+dtm_5m = aggregate(dtm, fact = 5)
+
+stei_dtm_metrics_5m = dtm_metrics(dtm_5m)
+stei_chm_metrics_5m = chm_metrics(chm_5m)
+
+#10m
+chm_10m = aggregate(chm, fact = 10)
+dtm_10m = aggregate(dtm, fact = 10)
+
+stei_dtm_metrics_10m = dtm_metrics(dtm_10m)
+stei_chm_metrics_10m = chm_metrics(chm_10m)
+
+#15m
+chm_15m = aggregate(chm, fact = 15)
+dtm_15m = aggregate(dtm, fact = 15)
+
+stei_dtm_metrics_15m = dtm_metrics(dtm_15m)
+stei_chm_metrics_15m = chm_metrics(chm_15m)
+
+#20m
+chm_20m = aggregate(chm, fact = 20)
+dtm_20m = aggregate(dtm, fact = 20)
+
+stei_dtm_metrics_20m = dtm_metrics(dtm_20m)
+stei_chm_metrics_20m = chm_metrics(chm_20m)
+
+#25m
+chm_25m = aggregate(chm, fact = 25)
+dtm_25m = aggregate(dtm, fact = 25)
+
+stei_dtm_metrics_25m = dtm_metrics(dtm_25m)
+stei_chm_metrics_25m = chm_metrics(chm_25m)
+
+#30m
+chm_30m = aggregate(chm, fact = 30)
+dtm_30m = aggregate(dtm, fact = 30)
+
+stei_dtm_metrics_30m = dtm_metrics(dtm_30m)
+stei_chm_metrics_30m = chm_metrics(chm_30m)
+
+#40m
+chm_40m = aggregate(chm, fact = 40)
+dtm_40m = aggregate(dtm, fact = 40)
+
+stei_dtm_metrics_40m = dtm_metrics(dtm_40m)
+stei_chm_metrics_40m = chm_metrics(chm_40m)
+
+#60m
+chm_60m = aggregate(chm, fact = 60)
+dtm_60m = aggregate(dtm, fact = 60)
+
+stei_dtm_metrics_60m = dtm_metrics(dtm_60m)
+stei_chm_metrics_60m = chm_metrics(chm_60m)
+
+#50m
+chm_50m = aggregate(chm, fact = 50)
+dtm_50m = aggregate(dtm, fact = 50)
+
+stei_dtm_metrics_50m = dtm_metrics(dtm_50m)
+stei_chm_metrics_50m = chm_metrics(chm_50m)
+
+#70m
+chm_70m = aggregate(chm, fact = 70)
+dtm_70m = aggregate(dtm, fact = 70)
+
+stei_dtm_metrics_70m = dtm_metrics(dtm_70m)
+stei_chm_metrics_70m = chm_metrics(chm_70m)
+
+#100m
+chm_100m = aggregate(chm, fact = 100)
+dtm_100m = aggregate(dtm, fact = 100)
+
+stei_dtm_metrics_100m = dtm_metrics(dtm_100m)
+stei_chm_metrics_100m = chm_metrics(chm_100m)
+```
+
+```{r}
+dtm = raster(file.path("~/structure_models/teak/DEMs/2019_DTM.tif"))
+dsm = raster(file.path("~/structure_models/teak/DEMs/2019_DSM.tif"))
+
+chm = dsm-dtm
+N_extent = extent(315000, 324500, 4091500, 4105700)
+
+chm = crop(chm, N_extent)
+dtm = crop(dtm, N_extent)
+chm[chm <= min] <- NA
+
+#Plot DTM and CHM and save as #jpeg
+#jpeg(file = "TEAK_dtm.#jpeg", quality = 100)
+#plot(dtm, main = "DTM of Lower Teakettle NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#jpeg(file =  "TEAK_chm.#jpeg", quality = 100)
+#plot(chm, main = "CHM of Lower Teakettle NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#dev.off()
+
+#Calculate complexity metrics
+#For 1m pixel size
+teak_dtm_metrics_1m = dtm_metrics(dtm)
+teak_chm_metrics_1m = chm_metrics(chm)
+
+#Aggregate chm to 
+#5m
+chm_5m = aggregate(chm, fact = 5)
+dtm_5m = aggregate(dtm, fact = 5)
+
+teak_dtm_metrics_5m = dtm_metrics(dtm_5m)
+teak_chm_metrics_5m = chm_metrics(chm_5m)
+
+#10m
+chm_10m = aggregate(chm, fact = 10)
+dtm_10m = aggregate(dtm, fact = 10)
+
+teak_dtm_metrics_10m = dtm_metrics(dtm_10m)
+teak_chm_metrics_10m = chm_metrics(chm_10m)
+
+#15m
+chm_15m = aggregate(chm, fact = 15)
+dtm_15m = aggregate(dtm, fact = 15)
+
+teak_dtm_metrics_15m = dtm_metrics(dtm_15m)
+teak_chm_metrics_15m = chm_metrics(chm_15m)
+
+#20m
+chm_20m = aggregate(chm, fact = 20)
+dtm_20m = aggregate(dtm, fact = 20)
+
+teak_dtm_metrics_20m = dtm_metrics(dtm_20m)
+teak_chm_metrics_20m = chm_metrics(chm_20m)
+
+#25m
+chm_25m = aggregate(chm, fact = 25)
+dtm_25m = aggregate(dtm, fact = 25)
+
+teak_dtm_metrics_25m = dtm_metrics(dtm_25m)
+teak_chm_metrics_25m = chm_metrics(chm_25m)
+
+#30m
+chm_30m = aggregate(chm, fact = 30)
+dtm_30m = aggregate(dtm, fact = 30)
+
+teak_dtm_metrics_30m = dtm_metrics(dtm_30m)
+teak_chm_metrics_30m = chm_metrics(chm_30m)
+
+#40m
+chm_40m = aggregate(chm, fact = 40)
+dtm_40m = aggregate(dtm, fact = 40)
+
+teak_dtm_metrics_40m = dtm_metrics(dtm_40m)
+teak_chm_metrics_40m = chm_metrics(chm_40m)
+
+#60m
+chm_60m = aggregate(chm, fact = 60)
+dtm_60m = aggregate(dtm, fact = 60)
+
+teak_dtm_metrics_60m = dtm_metrics(dtm_60m)
+teak_chm_metrics_60m = chm_metrics(chm_60m)
+
+#50m
+chm_50m = aggregate(chm, fact = 50)
+dtm_50m = aggregate(dtm, fact = 50)
+
+teak_dtm_metrics_50m = dtm_metrics(dtm_50m)
+teak_chm_metrics_50m = chm_metrics(chm_50m)
+
+#70m
+chm_70m = aggregate(chm, fact = 70)
+dtm_70m = aggregate(dtm, fact = 70)
+
+teak_dtm_metrics_70m = dtm_metrics(dtm_70m)
+teak_chm_metrics_70m = chm_metrics(chm_70m)
+
+#100m
+chm_100m = aggregate(chm, fact = 100)
+dtm_100m = aggregate(dtm, fact = 100)
+
+teak_dtm_metrics_100m = dtm_metrics(dtm_100m)
+teak_chm_metrics_100m = chm_metrics(chm_100m)
+```
+
+
+```{r}
+dtm = raster(file.path("~/structure_models/wref/DEMs/2019_DTM.tif"))
+dsm = raster(file.path("~/structure_models/wref/DEMs/2019_DSM.tif"))
+
+chm = dsm-dtm
+
+N_extent = extent(574000, 584010, 5070500, 5082700)
+
+chm = crop(chm, N_extent)
+dtm = crop(dtm, N_extent)
+chm[chm <= min] <- NA
+
+#Plot DTM and CHM and save as #jpeg
+#jpeg(file = "WREF_dtm.#jpeg", quality = 100)
+#plot(dtm, main = "DTM of Wind River Experimental Forest NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#jpeg(file =  "WREF_chm.#jpeg", quality = 100)
+#plot(chm, main = "CHM of Wind River Experimental Forest NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#dev.off()
+
+#Calculate complexity metrics
+#For 1m pixel size
+wref_dtm_metrics_1m = dtm_metrics(dtm)
+wref_chm_metrics_1m = chm_metrics(chm)
+
+#Aggregate chm to 
+#5m
+chm_5m = aggregate(chm, fact = 5)
+dtm_5m = aggregate(dtm, fact = 5)
+
+wref_dtm_metrics_5m = dtm_metrics(dtm_5m)
+wref_chm_metrics_5m = chm_metrics(chm_5m)
+
+#10m
+chm_10m = aggregate(chm, fact = 10)
+dtm_10m = aggregate(dtm, fact = 10)
+
+wref_dtm_metrics_10m = dtm_metrics(dtm_10m)
+wref_chm_metrics_10m = chm_metrics(chm_10m)
+
+#15m
+chm_15m = aggregate(chm, fact = 15)
+dtm_15m = aggregate(dtm, fact = 15)
+
+wref_dtm_metrics_15m = dtm_metrics(dtm_15m)
+wref_chm_metrics_15m = chm_metrics(chm_15m)
+
+#20m
+chm_20m = aggregate(chm, fact = 20)
+dtm_20m = aggregate(dtm, fact = 20)
+
+wref_dtm_metrics_20m = dtm_metrics(dtm_20m)
+wref_chm_metrics_20m = chm_metrics(chm_20m)
+
+#25m
+chm_25m = aggregate(chm, fact = 25)
+dtm_25m = aggregate(dtm, fact = 25)
+
+wref_dtm_metrics_25m = dtm_metrics(dtm_25m)
+wref_chm_metrics_25m = chm_metrics(chm_25m)
+
+#30m
+chm_30m = aggregate(chm, fact = 30)
+dtm_30m = aggregate(dtm, fact = 30)
+
+wref_dtm_metrics_30m = dtm_metrics(dtm_30m)
+wref_chm_metrics_30m = chm_metrics(chm_30m)
+
+#40m
+chm_40m = aggregate(chm, fact = 40)
+dtm_40m = aggregate(dtm, fact = 40)
+
+wref_dtm_metrics_40m = dtm_metrics(dtm_40m)
+wref_chm_metrics_40m = chm_metrics(chm_40m)
+
+#60m
+chm_60m = aggregate(chm, fact = 60)
+dtm_60m = aggregate(dtm, fact = 60)
+
+wref_dtm_metrics_60m = dtm_metrics(dtm_60m)
+wref_chm_metrics_60m = chm_metrics(chm_60m)
+
+#50m
+chm_50m = aggregate(chm, fact = 50)
+dtm_50m = aggregate(dtm, fact = 50)
+
+wref_dtm_metrics_50m = dtm_metrics(dtm_50m)
+wref_chm_metrics_50m = chm_metrics(chm_50m)
+
+#70m
+chm_70m = aggregate(chm, fact = 70)
+dtm_70m = aggregate(dtm, fact = 70)
+
+wref_dtm_metrics_70m = dtm_metrics(dtm_70m)
+wref_chm_metrics_70m = chm_metrics(chm_70m)
+
+#100m
+chm_100m = aggregate(chm, fact = 100)
+dtm_100m = aggregate(dtm, fact = 100)
+
+wref_dtm_metrics_100m = dtm_metrics(dtm_100m)
+wref_chm_metrics_100m = chm_metrics(chm_100m)
+```
+
+
+```{r}
+dtm = raster(file.path("~/structure_models/tree/DEMs/DP3.30024.001_DTM.tif"))
+dsm = raster(file.path("~/structure_models/tree/DEMs/DP3.30024.001_DSM.tif"))
+
+chm = dsm-dtm
+
+N_extent = extent(296000, 310000, 5036000, 5046900)
+
+chm = crop(chm, N_extent)
+dtm = crop(dtm, N_extent)
+chm[chm <= min] <- NA
+
+#Plot DTM and CHM and save as #jpeg
+#jpeg(file = "TREE_dtm.#jpeg", quality = 100)
+#plot(dtm, main = "DTM of Treehaven NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#jpeg(file =  "TREE_chm.#jpeg", quality = 100)
+#plot(chm, main = "CHM of Treehaven NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#dev.off()
+
+#Calculate complexity metrics
+#For 1m pixel size
+tree_dtm_metrics_1m = dtm_metrics(dtm)
+tree_chm_metrics_1m = chm_metrics(chm)
+
+#Aggregate chm to 
+#5m
+chm_5m = aggregate(chm, fact = 5)
+dtm_5m = aggregate(dtm, fact = 5)
+
+tree_dtm_metrics_5m = dtm_metrics(dtm_5m)
+tree_chm_metrics_5m = chm_metrics(chm_5m)
+
+#10m
+chm_10m = aggregate(chm, fact = 10)
+dtm_10m = aggregate(dtm, fact = 10)
+
+tree_dtm_metrics_10m = dtm_metrics(dtm_10m)
+tree_chm_metrics_10m = chm_metrics(chm_10m)
+
+#15m
+chm_15m = aggregate(chm, fact = 15)
+dtm_15m = aggregate(dtm, fact = 15)
+
+tree_dtm_metrics_15m = dtm_metrics(dtm_15m)
+tree_chm_metrics_15m = chm_metrics(chm_15m)
+
+#20m
+chm_20m = aggregate(chm, fact = 20)
+dtm_20m = aggregate(dtm, fact = 20)
+
+tree_dtm_metrics_20m = dtm_metrics(dtm_20m)
+tree_chm_metrics_20m = chm_metrics(chm_20m)
+
+#25m
+chm_25m = aggregate(chm, fact = 25)
+dtm_25m = aggregate(dtm, fact = 25)
+
+tree_dtm_metrics_25m = dtm_metrics(dtm_25m)
+tree_chm_metrics_25m = chm_metrics(chm_25m)
+
+#30m
+chm_30m = aggregate(chm, fact = 30)
+dtm_30m = aggregate(dtm, fact = 30)
+
+tree_dtm_metrics_30m = dtm_metrics(dtm_30m)
+tree_chm_metrics_30m = chm_metrics(chm_30m)
+
+#40m
+chm_40m = aggregate(chm, fact = 40)
+dtm_40m = aggregate(dtm, fact = 40)
+
+tree_dtm_metrics_40m = dtm_metrics(dtm_40m)
+tree_chm_metrics_40m = chm_metrics(chm_40m)
+
+#60m
+chm_60m = aggregate(chm, fact = 60)
+dtm_60m = aggregate(dtm, fact = 60)
+
+tree_dtm_metrics_60m = dtm_metrics(dtm_60m)
+tree_chm_metrics_60m = chm_metrics(chm_60m)
+
+#50m
+chm_50m = aggregate(chm, fact = 50)
+dtm_50m = aggregate(dtm, fact = 50)
+
+tree_dtm_metrics_50m = dtm_metrics(dtm_50m)
+tree_chm_metrics_50m = chm_metrics(chm_50m)
+
+#70m
+chm_70m = aggregate(chm, fact = 70)
+dtm_70m = aggregate(dtm, fact = 70)
+
+tree_dtm_metrics_70m = dtm_metrics(dtm_70m)
+tree_chm_metrics_70m = chm_metrics(chm_70m)
+
+#100m
+chm_100m = aggregate(chm, fact = 100)
+dtm_100m = aggregate(dtm, fact = 100)
+
+tree_dtm_metrics_100m = dtm_metrics(dtm_100m)
+tree_chm_metrics_100m = chm_metrics(chm_100m)
+```
+
+
+```{r}
+dtm = raster(file.path("~/structure_models/abby/DEMs/2018_DTM.tif"))
+dsm = raster(file.path("~/structure_models/abby/DEMs/2018_DSM.tif"))
+
+chm = dsm-dtm
+
+N_extent = extent(547000, 559080, 5062000, 5073000)
+chm = crop(chm, N_extent)
+dtm = crop(dtm, N_extent)
+chm[chm <= min] <- NA
+
+#Plot DTM and CHM and save as #jpeg
+#jpeg(file = "ABBY_dtm.#jpeg", quality = 100)
+#plot(dtm, main = "DTM of Abby Road NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#jpeg(file =  "ABBY_chm.#jpeg", quality = 100)
+#plot(chm, main = "CHM of Abby Roas NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#dev.off()
+
+#Calculate complexity metrics
+#For 1m pixel size
+abby_dtm_metrics_1m = dtm_metrics(dtm)
+abby_chm_metrics_1m = chm_metrics(chm)
+
+#Aggregate chm to 
+#5m
+chm_5m = aggregate(chm, fact = 5)
+dtm_5m = aggregate(dtm, fact = 5)
+
+abby_dtm_metrics_5m = dtm_metrics(dtm_5m)
+abby_chm_metrics_5m = chm_metrics(chm_5m)
+
+#10m
+chm_10m = aggregate(chm, fact = 10)
+dtm_10m = aggregate(dtm, fact = 10)
+
+abby_dtm_metrics_10m = dtm_metrics(dtm_10m)
+abby_chm_metrics_10m = chm_metrics(chm_10m)
+
+#15m
+chm_15m = aggregate(chm, fact = 15)
+dtm_15m = aggregate(dtm, fact = 15)
+
+abby_dtm_metrics_15m = dtm_metrics(dtm_15m)
+abby_chm_metrics_15m = chm_metrics(chm_15m)
+
+#20m
+chm_20m = aggregate(chm, fact = 20)
+dtm_20m = aggregate(dtm, fact = 20)
+
+abby_dtm_metrics_20m = dtm_metrics(dtm_20m)
+abby_chm_metrics_20m = chm_metrics(chm_20m)
+
+#25m
+chm_25m = aggregate(chm, fact = 25)
+dtm_25m = aggregate(dtm, fact = 25)
+
+abby_dtm_metrics_25m = dtm_metrics(dtm_25m)
+abby_chm_metrics_25m = chm_metrics(chm_25m)
+
+#30m
+chm_30m = aggregate(chm, fact = 30)
+dtm_30m = aggregate(dtm, fact = 30)
+
+abby_dtm_metrics_30m = dtm_metrics(dtm_30m)
+abby_chm_metrics_30m = chm_metrics(chm_30m)
+
+#40m
+chm_40m = aggregate(chm, fact = 40)
+dtm_40m = aggregate(dtm, fact = 40)
+
+abby_dtm_metrics_40m = dtm_metrics(dtm_40m)
+abby_chm_metrics_40m = chm_metrics(chm_40m)
+
+#60m
+chm_60m = aggregate(chm, fact = 60)
+dtm_60m = aggregate(dtm, fact = 60)
+
+abby_dtm_metrics_60m = dtm_metrics(dtm_60m)
+abby_chm_metrics_60m = chm_metrics(chm_60m)
+
+#50m
+chm_50m = aggregate(chm, fact = 50)
+dtm_50m = aggregate(dtm, fact = 50)
+
+abby_dtm_metrics_50m = dtm_metrics(dtm_50m)
+abby_chm_metrics_50m = chm_metrics(chm_50m)
+
+#70m
+chm_70m = aggregate(chm, fact = 70)
+dtm_70m = aggregate(dtm, fact = 70)
+
+abby_dtm_metrics_70m = dtm_metrics(dtm_70m)
+abby_chm_metrics_70m = chm_metrics(chm_70m)
+
+#100m
+chm_100m = aggregate(chm, fact = 100)
+dtm_100m = aggregate(dtm, fact = 100)
+
+abby_dtm_metrics_100m = dtm_metrics(dtm_100m)
+abby_chm_metrics_100m = chm_metrics(chm_100m)
+```
+
+```{r}
+dtm = raster(file.path("~/structure_models/grsm/DEMs/2016_DTM.tif"))
+dsm = raster(file.path("~/structure_models/grsm/DEMs/2016_DSM.tif"))
+
+chm = dsm-dtm
+
+N_extent = extent(266000, 276900, 3940000, 3952900)
+
+#plot(chm)
+
+chm = crop(chm, N_extent)
+dtm = crop(dtm, N_extent)
+chm[chm <= min] <- NA
+
+#Plot DTM and CHM and save as #jpeg
+#jpeg(file = "GRSM_dtm.#jpeg", quality = 100)
+#plot(dtm, main = "DTM of Great Smoky Mountains National Park NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#jpeg(file =  "GRSM_chm.#jpeg", quality = 100)
+#plot(chm, main = "CHM of Great Smoky Mountains National Park NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#dev.off()
+
+#plot(dtm)
+
+#Calculate complexity metrics
+#For 1m pixel size
+grsm_dtm_metrics_1m = dtm_metrics(dtm)
+grsm_chm_metrics_1m = chm_metrics(chm)
+
+#Aggregate chm to 
+#5m
+chm_5m = aggregate(chm, fact = 5)
+dtm_5m = aggregate(dtm, fact = 5)
+
+grsm_dtm_metrics_5m = dtm_metrics(dtm_5m)
+grsm_chm_metrics_5m = chm_metrics(chm_5m)
+
+#10m
+chm_10m = aggregate(chm, fact = 10)
+dtm_10m = aggregate(dtm, fact = 10)
+
+grsm_dtm_metrics_10m = dtm_metrics(dtm_10m)
+grsm_chm_metrics_10m = chm_metrics(chm_10m)
+
+#15m
+chm_15m = aggregate(chm, fact = 15)
+dtm_15m = aggregate(dtm, fact = 15)
+
+grsm_dtm_metrics_15m = dtm_metrics(dtm_15m)
+grsm_chm_metrics_15m = chm_metrics(chm_15m)
+
+#20m
+chm_20m = aggregate(chm, fact = 20)
+dtm_20m = aggregate(dtm, fact = 20)
+
+grsm_dtm_metrics_20m = dtm_metrics(dtm_20m)
+grsm_chm_metrics_20m = chm_metrics(chm_20m)
+
+#25m
+chm_25m = aggregate(chm, fact = 25)
+dtm_25m = aggregate(dtm, fact = 25)
+
+grsm_dtm_metrics_25m = dtm_metrics(dtm_25m)
+grsm_chm_metrics_25m = chm_metrics(chm_25m)
+
+#30m
+chm_30m = aggregate(chm, fact = 30)
+dtm_30m = aggregate(dtm, fact = 30)
+
+grsm_dtm_metrics_30m = dtm_metrics(dtm_30m)
+grsm_chm_metrics_30m = chm_metrics(chm_30m)
+
+#40m
+chm_40m = aggregate(chm, fact = 40)
+dtm_40m = aggregate(dtm, fact = 40)
+
+grsm_dtm_metrics_40m = dtm_metrics(dtm_40m)
+grsm_chm_metrics_40m = chm_metrics(chm_40m)
+
+#60m
+chm_60m = aggregate(chm, fact = 60)
+dtm_60m = aggregate(dtm, fact = 60)
+
+grsm_dtm_metrics_60m = dtm_metrics(dtm_60m)
+grsm_chm_metrics_60m = chm_metrics(chm_60m)
+
+#50m
+chm_50m = aggregate(chm, fact = 50)
+dtm_50m = aggregate(dtm, fact = 50)
+
+grsm_dtm_metrics_50m = dtm_metrics(dtm_50m)
+grsm_chm_metrics_50m = chm_metrics(chm_50m)
+
+#70m
+chm_70m = aggregate(chm, fact = 70)
+dtm_70m = aggregate(dtm, fact = 70)
+
+grsm_dtm_metrics_70m = dtm_metrics(dtm_70m)
+grsm_chm_metrics_70m = chm_metrics(chm_70m)
+
+#100m
+chm_100m = aggregate(chm, fact = 100)
+dtm_100m = aggregate(dtm, fact = 100)
+
+grsm_dtm_metrics_100m = dtm_metrics(dtm_100m)
+grsm_chm_metrics_100m = chm_metrics(chm_100m)
+```
+
+
+#harv
+```{r}
+dtm = raster(file.path("~/structure_models/harv/DEMs/DP3.30024.001_DTM.tif"))
+dsm = raster(file.path("~/structure_models/harv/DEMs/DP3.30024.001_DSM.tif"))
+
+chm = dsm-dtm
+
+N_extent = extent(725000, 734000, 4697000, 4713900)
+
+chm = crop(chm, N_extent)
+dtm = crop(dtm, N_extent)
+chm[chm <= min] <- NA
+
+#Plot DTM and CHM and save as #jpeg
+#jpeg(file = "HARV_dtm.#jpeg", quality = 100)
+#plot(dtm, main = "DTM of Harvard Forest & Quabbin Watershed NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#jpeg(file =  "HARV_chm.#jpeg", quality = 100)
+#plot(chm, main = "CHM of Harvard Forest & Quabbin Watershed NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#dev.off()
+
+#Calculate complexity metrics
+#For 1m pixel size
+harv_dtm_metrics_1m = dtm_metrics(dtm)
+harv_chm_metrics_1m = chm_metrics(chm)
+
+#Aggregate chm to 
+#5m
+chm_5m = aggregate(chm, fact = 5)
+dtm_5m = aggregate(dtm, fact = 5)
+
+harv_dtm_metrics_5m = dtm_metrics(dtm_5m)
+harv_chm_metrics_5m = chm_metrics(chm_5m)
+
+#10m
+chm_10m = aggregate(chm, fact = 10)
+dtm_10m = aggregate(dtm, fact = 10)
+
+harv_dtm_metrics_10m = dtm_metrics(dtm_10m)
+harv_chm_metrics_10m = chm_metrics(chm_10m)
+
+#15m
+chm_15m = aggregate(chm, fact = 15)
+dtm_15m = aggregate(dtm, fact = 15)
+
+harv_dtm_metrics_15m = dtm_metrics(dtm_15m)
+harv_chm_metrics_15m = chm_metrics(chm_15m)
+
+#20m
+chm_20m = aggregate(chm, fact = 20)
+dtm_20m = aggregate(dtm, fact = 20)
+
+harv_dtm_metrics_20m = dtm_metrics(dtm_20m)
+harv_chm_metrics_20m = chm_metrics(chm_20m)
+
+#25m
+chm_25m = aggregate(chm, fact = 25)
+dtm_25m = aggregate(dtm, fact = 25)
+
+harv_dtm_metrics_25m = dtm_metrics(dtm_25m)
+harv_chm_metrics_25m = chm_metrics(chm_25m)
+
+#30m
+chm_30m = aggregate(chm, fact = 30)
+dtm_30m = aggregate(dtm, fact = 30)
+
+harv_dtm_metrics_30m = dtm_metrics(dtm_30m)
+harv_chm_metrics_30m = chm_metrics(chm_30m)
+
+#40m
+chm_40m = aggregate(chm, fact = 40)
+dtm_40m = aggregate(dtm, fact = 40)
+
+harv_dtm_metrics_40m = dtm_metrics(dtm_40m)
+harv_chm_metrics_40m = chm_metrics(chm_40m)
+
+#60m
+chm_60m = aggregate(chm, fact = 60)
+dtm_60m = aggregate(dtm, fact = 60)
+
+harv_dtm_metrics_60m = dtm_metrics(dtm_60m)
+harv_chm_metrics_60m = chm_metrics(chm_60m)
+
+#50m
+chm_50m = aggregate(chm, fact = 50)
+dtm_50m = aggregate(dtm, fact = 50)
+
+harv_dtm_metrics_50m = dtm_metrics(dtm_50m)
+harv_chm_metrics_50m = chm_metrics(chm_50m)
+
+#70m
+chm_70m = aggregate(chm, fact = 70)
+dtm_70m = aggregate(dtm, fact = 70)
+
+harv_dtm_metrics_70m = dtm_metrics(dtm_70m)
+harv_chm_metrics_70m = chm_metrics(chm_70m)
+
+#100m
+chm_100m = aggregate(chm, fact = 100)
+dtm_100m = aggregate(dtm, fact = 100)
+
+harv_dtm_metrics_100m = dtm_metrics(dtm_100m)
+harv_chm_metrics_100m = chm_metrics(chm_100m)
+```
+
+
+```{r}
+dtm = raster(file.path("~/structure_models/bart/DEMs/DP3.30024.001_DTM.tif"))
+dsm = raster(file.path("~/structure_models/bart/DEMs/DP3.30024.001_DSM.tif"))
+
+chm = dsm-dtm
+
+N_extent = extent(312580, 323220, 4873300, 4883700)
+
+chm = crop(chm, N_extent)
+dtm = crop(dtm, N_extent)
+chm[chm <= min] <- NA
+
+#Plot DTM and CHM and save as #jpeg
+#jpeg(file = "BART_dtm.#jpeg", quality = 100)
+#plot(dtm, main = "DTM of Bartlett Experimental Forest NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#jpeg(file =  "BART_chm.#jpeg", quality = 100)
+#plot(chm, main = "CHM of Bartlett Experimental Forest NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#dev.off()
+
+#Calculate complexity metrics
+#For 1m pixel size
+bart_dtm_metrics_1m = dtm_metrics(dtm)
+bart_chm_metrics_1m = chm_metrics(chm)
+
+#Aggregate chm to 
+#5m
+chm_5m = aggregate(chm, fact = 5)
+dtm_5m = aggregate(dtm, fact = 5)
+
+bart_dtm_metrics_5m = dtm_metrics(dtm_5m)
+bart_chm_metrics_5m = chm_metrics(chm_5m)
+
+#10m
+chm_10m = aggregate(chm, fact = 10)
+dtm_10m = aggregate(dtm, fact = 10)
+
+bart_dtm_metrics_10m = dtm_metrics(dtm_10m)
+bart_chm_metrics_10m = chm_metrics(chm_10m)
+
+#15m
+chm_15m = aggregate(chm, fact = 15)
+dtm_15m = aggregate(dtm, fact = 15)
+
+bart_dtm_metrics_15m = dtm_metrics(dtm_15m)
+bart_chm_metrics_15m = chm_metrics(chm_15m)
+
+#20m
+chm_20m = aggregate(chm, fact = 20)
+dtm_20m = aggregate(dtm, fact = 20)
+
+bart_dtm_metrics_20m = dtm_metrics(dtm_20m)
+bart_chm_metrics_20m = chm_metrics(chm_20m)
+
+#25m
+chm_25m = aggregate(chm, fact = 25)
+dtm_25m = aggregate(dtm, fact = 25)
+
+bart_dtm_metrics_25m = dtm_metrics(dtm_25m)
+bart_chm_metrics_25m = chm_metrics(chm_25m)
+
+#30m
+chm_30m = aggregate(chm, fact = 30)
+dtm_30m = aggregate(dtm, fact = 30)
+
+bart_dtm_metrics_30m = dtm_metrics(dtm_30m)
+bart_chm_metrics_30m = chm_metrics(chm_30m)
+
+#40m
+chm_40m = aggregate(chm, fact = 40)
+dtm_40m = aggregate(dtm, fact = 40)
+
+bart_dtm_metrics_40m = dtm_metrics(dtm_40m)
+bart_chm_metrics_40m = chm_metrics(chm_40m)
+
+#60m
+chm_60m = aggregate(chm, fact = 60)
+dtm_60m = aggregate(dtm, fact = 60)
+
+bart_dtm_metrics_60m = dtm_metrics(dtm_60m)
+bart_chm_metrics_60m = chm_metrics(chm_60m)
+
+#50m
+chm_50m = aggregate(chm, fact = 50)
+dtm_50m = aggregate(dtm, fact = 50)
+
+bart_dtm_metrics_50m = dtm_metrics(dtm_50m)
+bart_chm_metrics_50m = chm_metrics(chm_50m)
+
+#70m
+chm_70m = aggregate(chm, fact = 70)
+dtm_70m = aggregate(dtm, fact = 70)
+
+bart_dtm_metrics_70m = dtm_metrics(dtm_70m)
+bart_chm_metrics_70m = chm_metrics(chm_70m)
+
+#100m
+chm_100m = aggregate(chm, fact = 100)
+dtm_100m = aggregate(dtm, fact = 100)
+
+bart_dtm_metrics_100m = dtm_metrics(dtm_100m)
+bart_chm_metrics_100m = chm_metrics(chm_100m)
+```
+
+```{r}
+dtm = raster(file.path("~/structure_models/jerc/DEMs/2019_DTM.tif"))
+dsm = raster(file.path("~/structure_models/jerc/DEMs/2019_DSM.tif"))
+plot(dsm)
+chm = dsm-dtm
+
+N_extent = extent(736000, 746000, 3449900, 3464000)
+
+chm = crop(chm, N_extent)
+dtm = crop(dtm, N_extent)
+chm[chm <= min] <- NA
+
+#Plot DTM and CHM and save as #jpeg
+#jpeg(file = "JERC_dtm.#jpeg", quality = 100)
+#plot(dtm, main = "DTM of The Jones Center at Ichauway NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#jpeg(file =  "JERC_chm.#jpeg", quality = 100)
+#plot(chm, main = "CHM of The Jones Center at Ichauway NEON Site", xlab = "UTM Easting Coordinate", ylab = "UTM Northing Coordinate")
+#dev.off()
+
+#Calculate complexity metrics
+#For 1m pixel size
+jerc_dtm_metrics_1m = dtm_metrics(dtm)
+jerc_chm_metrics_1m = chm_metrics(chm)
+
+#Aggregate chm to 
+#5m
+chm_5m = aggregate(chm, fact = 5)
+dtm_5m = aggregate(dtm, fact = 5)
+
+jerc_dtm_metrics_5m = dtm_metrics(dtm_5m)
+jerc_chm_metrics_5m = chm_metrics(chm_5m)
+
+#10m
+chm_10m = aggregate(chm, fact = 10)
+dtm_10m = aggregate(dtm, fact = 10)
+
+jerc_dtm_metrics_10m = dtm_metrics(dtm_10m)
+jerc_chm_metrics_10m = chm_metrics(chm_10m)
+
+#15m
+chm_15m = aggregate(chm, fact = 15)
+dtm_15m = aggregate(dtm, fact = 15)
+
+jerc_dtm_metrics_15m = dtm_metrics(dtm_15m)
+jerc_chm_metrics_15m = chm_metrics(chm_15m)
+
+#20m
+chm_20m = aggregate(chm, fact = 20)
+dtm_20m = aggregate(dtm, fact = 20)
+
+jerc_dtm_metrics_20m = dtm_metrics(dtm_20m)
+jerc_chm_metrics_20m = chm_metrics(chm_20m)
+
+#25m
+chm_25m = aggregate(chm, fact = 25)
+dtm_25m = aggregate(dtm, fact = 25)
+
+jerc_dtm_metrics_25m = dtm_metrics(dtm_25m)
+jerc_chm_metrics_25m = chm_metrics(chm_25m)
+
+#30m
+chm_30m = aggregate(chm, fact = 30)
+dtm_30m = aggregate(dtm, fact = 30)
+
+jerc_dtm_metrics_30m = dtm_metrics(dtm_30m)
+jerc_chm_metrics_30m = chm_metrics(chm_30m)
+
+#40m
+chm_40m = aggregate(chm, fact = 40)
+dtm_40m = aggregate(dtm, fact = 40)
+
+jerc_dtm_metrics_40m = dtm_metrics(dtm_40m)
+jerc_chm_metrics_40m = chm_metrics(chm_40m)
+
+#60m
+chm_60m = aggregate(chm, fact = 60)
+dtm_60m = aggregate(dtm, fact = 60)
+
+jerc_dtm_metrics_60m = dtm_metrics(dtm_60m)
+jerc_chm_metrics_60m = chm_metrics(chm_60m)
+
+#50m
+chm_50m = aggregate(chm, fact = 50)
+dtm_50m = aggregate(dtm, fact = 50)
+
+jerc_dtm_metrics_50m = dtm_metrics(dtm_50m)
+jerc_chm_metrics_50m = chm_metrics(chm_50m)
+
+#70m
+chm_70m = aggregate(chm, fact = 70)
+dtm_70m = aggregate(dtm, fact = 70)
+
+jerc_dtm_metrics_70m = dtm_metrics(dtm_70m)
+jerc_chm_metrics_70m = chm_metrics(chm_70m)
+
+#100m
+chm_100m = aggregate(chm, fact = 100)
+dtm_100m = aggregate(dtm, fact = 100)
+
+jerc_dtm_metrics_100m = dtm_metrics(dtm_100m)
+jerc_chm_metrics_100m = chm_metrics(chm_100m)
+```
+
+
+##### Join data tables
+```{r}
+chm_complexity = rbind(dela_chm_metrics_1m, ornl_chm_metrics_1m, abby_chm_metrics_1m, bart_chm_metrics_1m, blan_chm_metrics_1m, bona_chm_metrics_1m, clbj_chm_metrics_1m, deju_chm_metrics_1m, grsm_chm_metrics_1m, guan_chm_metrics_1m, harv_chm_metrics_1m, heal_chm_metrics_1m, jerc_chm_metrics_1m, konz_chm_metrics_1m, leno_chm_metrics_1m, mlbs_chm_metrics_1m, moab_chm_metrics_1m, niwo_chm_metrics_1m, onaq_chm_metrics_1m, osbs_chm_metrics_1m, puum_chm_metrics_1m, rmnp_chm_metrics_1m, scbi_chm_metrics_1m, serc_chm_metrics_1m, sjer_chm_metrics_1m, soap_chm_metrics_1m, stei_chm_metrics_1m, tall_chm_metrics_1m, teak_chm_metrics_1m, tree_chm_metrics_1m, ukfs_chm_metrics_1m, unde_chm_metrics_1m, wref_chm_metrics_1m, yell_chm_metrics_1m)
+
+row.names(chm_complexity) = c("DELA" , "ORNL", "ABBY", "BART", "BLAN" , "BONA", "CLBJ", "DEJU", "GRSM", "GUAN", "HARV", "HEAL", "JERC", "KONZ", "LENO", "MLBS", "MOAB", "NIWO", "ONAQ", "OSBS", "PUUM", "RMNP", "SCBI", "SERC", "SJER", "SOAP", "STEI", "TALL", "TEAK", "TREE", "UKFS", "UNDE", "WREF", "YELL")
+
+dtm_complexity = rbind(dela_dtm_metrics_1m, ornl_dtm_metrics_1m, abby_dtm_metrics_1m, bart_dtm_metrics_1m, blan_dtm_metrics_1m, bona_dtm_metrics_1m, clbj_dtm_metrics_1m, deju_dtm_metrics_1m, grsm_dtm_metrics_1m, guan_dtm_metrics_1m, harv_dtm_metrics_1m, heal_dtm_metrics_1m, jerc_dtm_metrics_1m, konz_dtm_metrics_1m, leno_dtm_metrics_1m, mlbs_dtm_metrics_1m, moab_dtm_metrics_1m, niwo_dtm_metrics_1m, onaq_dtm_metrics_1m, osbs_dtm_metrics_1m, puum_dtm_metrics_1m, rmnp_dtm_metrics_1m, scbi_dtm_metrics_1m, serc_dtm_metrics_1m, sjer_dtm_metrics_1m, soap_dtm_metrics_1m, stei_dtm_metrics_1m, tall_dtm_metrics_1m, teak_dtm_metrics_1m, tree_dtm_metrics_1m, ukfs_dtm_metrics_1m, unde_dtm_metrics_1m, wref_dtm_metrics_1m, yell_dtm_metrics_1m)
+
+row.names(dtm_complexity) = c("DELA", "ORNL","ABBY", "BART", "BLAN" , "BONA", "CLBJ", "DEJU", "GRSM", "GUAN", "HARV", "HEAL", "JERC", "KONZ", "LENO", "MLBS", "MOAB", "NIWO", "ONAQ", "OSBS", "PUUM", "RMNP", "SCBI", "SERC", "SJER", "SOAP", "STEI", "TALL", "TEAK", "TREE", "UKFS", "UNDE", "WREF", "YELL")
+
+str_complexity = cbind(chm_complexity, dtm_complexity)
+setwd(getwd())
+getwd()
+write.csv(str_complexity, file =  "str_complexity_1m.csv", row.names = TRUE)
+
+chm_complexity = rbind(dela_chm_metrics_5m, ornl_chm_metrics_5m, abby_chm_metrics_5m, bart_chm_metrics_5m, blan_chm_metrics_5m, bona_chm_metrics_5m, clbj_chm_metrics_5m, deju_chm_metrics_5m, grsm_chm_metrics_5m, guan_chm_metrics_5m, harv_chm_metrics_5m, heal_chm_metrics_5m, jerc_chm_metrics_5m, konz_chm_metrics_5m, leno_chm_metrics_5m, mlbs_chm_metrics_5m, moab_chm_metrics_5m, niwo_chm_metrics_5m, onaq_chm_metrics_5m, osbs_chm_metrics_5m, puum_chm_metrics_5m, rmnp_chm_metrics_5m, scbi_chm_metrics_5m, serc_chm_metrics_5m, sjer_chm_metrics_5m, soap_chm_metrics_5m, stei_chm_metrics_5m, tall_chm_metrics_5m, teak_chm_metrics_5m, tree_chm_metrics_5m, ukfs_chm_metrics_5m, unde_chm_metrics_5m, wref_chm_metrics_5m, yell_chm_metrics_5m)
+
+row.names(chm_complexity) = c("DELA" , "ORNL", "ABBY", "BART", "BLAN" , "BONA", "CLBJ", "DEJU", "GRSM", "GUAN", "HARV", "HEAL", "JERC", "KONZ", "LENO", "MLBS", "MOAB", "NIWO", "ONAQ", "OSBS", "PUUM", "RMNP", "SCBI", "SERC", "SJER", "SOAP", "STEI", "TALL", "TEAK", "TREE", "UKFS", "UNDE", "WREF", "YELL")
+
+dtm_complexity = rbind(dela_dtm_metrics_5m, ornl_dtm_metrics_5m, abby_dtm_metrics_5m, bart_dtm_metrics_5m, blan_dtm_metrics_5m, bona_dtm_metrics_5m, clbj_dtm_metrics_5m, deju_dtm_metrics_5m, grsm_dtm_metrics_5m, guan_dtm_metrics_5m, harv_dtm_metrics_5m, heal_dtm_metrics_5m, jerc_dtm_metrics_5m, konz_dtm_metrics_5m, leno_dtm_metrics_5m, mlbs_dtm_metrics_5m, moab_dtm_metrics_5m, niwo_dtm_metrics_5m, onaq_dtm_metrics_5m, osbs_dtm_metrics_5m, puum_dtm_metrics_5m, rmnp_dtm_metrics_5m, scbi_dtm_metrics_5m, serc_dtm_metrics_5m, sjer_dtm_metrics_5m, soap_dtm_metrics_5m, stei_dtm_metrics_5m, tall_dtm_metrics_5m, teak_dtm_metrics_5m, tree_dtm_metrics_5m, ukfs_dtm_metrics_5m, unde_dtm_metrics_5m, wref_dtm_metrics_5m, yell_dtm_metrics_5m)
+
+row.names(dtm_complexity) = c("DELA", "ORNL","ABBY", "BART", "BLAN" , "BONA", "CLBJ", "DEJU", "GRSM", "GUAN", "HARV", "HEAL", "JERC", "KONZ", "LENO", "MLBS", "MOAB", "NIWO", "ONAQ", "OSBS", "PUUM", "RMNP", "SCBI", "SERC", "SJER", "SOAP", "STEI", "TALL", "TEAK", "TREE", "UKFS", "UNDE", "WREF", "YELL")
+
+str_complexity = cbind(chm_complexity, dtm_complexity)
+write.csv(str_complexity, "str_complexity_5m.csv", row.names = TRUE)
+
+chm_complexity = rbind(dela_chm_metrics_10m, ornl_chm_metrics_10m, abby_chm_metrics_10m, bart_chm_metrics_10m, blan_chm_metrics_10m, bona_chm_metrics_10m, clbj_chm_metrics_10m, deju_chm_metrics_10m, grsm_chm_metrics_10m, guan_chm_metrics_10m, harv_chm_metrics_10m, heal_chm_metrics_10m, jerc_chm_metrics_10m, konz_chm_metrics_10m, leno_chm_metrics_10m, mlbs_chm_metrics_10m, moab_chm_metrics_10m, niwo_chm_metrics_10m, onaq_chm_metrics_10m, osbs_chm_metrics_10m, puum_chm_metrics_10m, rmnp_chm_metrics_10m, scbi_chm_metrics_10m, serc_chm_metrics_10m, sjer_chm_metrics_10m, soap_chm_metrics_10m, stei_chm_metrics_10m, tall_chm_metrics_10m, teak_chm_metrics_10m, tree_chm_metrics_10m, ukfs_chm_metrics_10m, unde_chm_metrics_10m, wref_chm_metrics_10m, yell_chm_metrics_10m)
+
+row.names(chm_complexity) = c("DELA" , "ORNL", "ABBY", "BART", "BLAN" , "BONA", "CLBJ", "DEJU", "GRSM", "GUAN", "HARV", "HEAL", "JERC", "KONZ", "LENO", "MLBS", "MOAB", "NIWO", "ONAQ", "OSBS", "PUUM", "RMNP", "SCBI", "SERC", "SJER", "SOAP", "STEI", "TALL", "TEAK", "TREE", "UKFS", "UNDE", "WREF", "YELL")
+
+dtm_complexity = rbind(dela_dtm_metrics_10m, ornl_dtm_metrics_10m, abby_dtm_metrics_10m, bart_dtm_metrics_10m, blan_dtm_metrics_10m, bona_dtm_metrics_10m, clbj_dtm_metrics_10m, deju_dtm_metrics_10m, grsm_dtm_metrics_10m, guan_dtm_metrics_10m, harv_dtm_metrics_10m, heal_dtm_metrics_10m, jerc_dtm_metrics_10m, konz_dtm_metrics_10m, leno_dtm_metrics_10m, mlbs_dtm_metrics_10m, moab_dtm_metrics_10m, niwo_dtm_metrics_10m, onaq_dtm_metrics_10m, osbs_dtm_metrics_10m, puum_dtm_metrics_10m, rmnp_dtm_metrics_10m, scbi_dtm_metrics_10m, serc_dtm_metrics_10m, sjer_dtm_metrics_10m, soap_dtm_metrics_10m, stei_dtm_metrics_10m, tall_dtm_metrics_10m, teak_dtm_metrics_10m, tree_dtm_metrics_10m, ukfs_dtm_metrics_10m, unde_dtm_metrics_10m, wref_dtm_metrics_10m, yell_dtm_metrics_10m)
+
+row.names(dtm_complexity) = c("DELA", "ORNL","ABBY", "BART", "BLAN" , "BONA", "CLBJ", "DEJU", "GRSM", "GUAN", "HARV", "HEAL", "JERC", "KONZ", "LENO", "MLBS", "MOAB", "NIWO", "ONAQ", "OSBS", "PUUM", "RMNP", "SCBI", "SERC", "SJER", "SOAP", "STEI", "TALL", "TEAK", "TREE", "UKFS", "UNDE", "WREF", "YELL")
+
+str_complexity = cbind(chm_complexity, dtm_complexity)
+write.csv(str_complexity, "str_complexity_10m.csv", row.names = TRUE)
+
+chm_complexity = rbind(dela_chm_metrics_15m, ornl_chm_metrics_15m, abby_chm_metrics_15m, bart_chm_metrics_15m, blan_chm_metrics_15m, bona_chm_metrics_15m, clbj_chm_metrics_15m, deju_chm_metrics_15m, grsm_chm_metrics_15m, guan_chm_metrics_15m, harv_chm_metrics_15m, heal_chm_metrics_15m, jerc_chm_metrics_15m, konz_chm_metrics_15m, leno_chm_metrics_15m, mlbs_chm_metrics_15m, moab_chm_metrics_15m, niwo_chm_metrics_15m, onaq_chm_metrics_15m, osbs_chm_metrics_15m, puum_chm_metrics_15m, rmnp_chm_metrics_15m, scbi_chm_metrics_15m, serc_chm_metrics_15m, sjer_chm_metrics_15m, soap_chm_metrics_15m, stei_chm_metrics_15m, tall_chm_metrics_15m, teak_chm_metrics_15m, tree_chm_metrics_15m, ukfs_chm_metrics_15m, unde_chm_metrics_15m, wref_chm_metrics_15m, yell_chm_metrics_15m)
+
+row.names(chm_complexity) = c("DELA" , "ORNL", "ABBY", "BART", "BLAN" , "BONA", "CLBJ", "DEJU", "GRSM", "GUAN", "HARV", "HEAL", "JERC", "KONZ", "LENO", "MLBS", "MOAB", "NIWO", "ONAQ", "OSBS", "PUUM", "RMNP", "SCBI", "SERC", "SJER", "SOAP", "STEI", "TALL", "TEAK", "TREE", "UKFS", "UNDE", "WREF", "YELL")
+
+dtm_complexity = rbind(dela_dtm_metrics_15m, ornl_dtm_metrics_15m, abby_dtm_metrics_15m, bart_dtm_metrics_15m, blan_dtm_metrics_15m, bona_dtm_metrics_15m, clbj_dtm_metrics_15m, deju_dtm_metrics_15m, grsm_dtm_metrics_15m, guan_dtm_metrics_15m, harv_dtm_metrics_15m, heal_dtm_metrics_15m, jerc_dtm_metrics_15m, konz_dtm_metrics_15m, leno_dtm_metrics_15m, mlbs_dtm_metrics_15m, moab_dtm_metrics_15m, niwo_dtm_metrics_15m, onaq_dtm_metrics_15m, osbs_dtm_metrics_15m, puum_dtm_metrics_15m, rmnp_dtm_metrics_15m, scbi_dtm_metrics_15m, serc_dtm_metrics_15m, sjer_dtm_metrics_15m, soap_dtm_metrics_15m, stei_dtm_metrics_15m, tall_dtm_metrics_15m, teak_dtm_metrics_15m, tree_dtm_metrics_15m, ukfs_dtm_metrics_15m, unde_dtm_metrics_15m, wref_dtm_metrics_15m, yell_dtm_metrics_15m)
+
+row.names(dtm_complexity) = c("DELA", "ORNL","ABBY", "BART", "BLAN" , "BONA", "CLBJ", "DEJU", "GRSM", "GUAN", "HARV", "HEAL", "JERC", "KONZ", "LENO", "MLBS", "MOAB", "NIWO", "ONAQ", "OSBS", "PUUM", "RMNP", "SCBI", "SERC", "SJER", "SOAP", "STEI", "TALL", "TEAK", "TREE", "UKFS", "UNDE", "WREF", "YELL")
+
+str_complexity = cbind(chm_complexity, dtm_complexity)
+write.csv(str_complexity, "str_complexity_15m.csv", row.names = TRUE)
+
+chm_complexity = rbind(dela_chm_metrics_20m, ornl_chm_metrics_20m, abby_chm_metrics_20m, bart_chm_metrics_20m, blan_chm_metrics_20m, bona_chm_metrics_20m, clbj_chm_metrics_20m, deju_chm_metrics_20m, grsm_chm_metrics_20m, guan_chm_metrics_20m, harv_chm_metrics_20m, heal_chm_metrics_20m, jerc_chm_metrics_20m, konz_chm_metrics_20m, leno_chm_metrics_20m, mlbs_chm_metrics_20m, moab_chm_metrics_20m, niwo_chm_metrics_20m, onaq_chm_metrics_20m, osbs_chm_metrics_20m, puum_chm_metrics_20m, rmnp_chm_metrics_20m, scbi_chm_metrics_20m, serc_chm_metrics_20m, sjer_chm_metrics_20m, soap_chm_metrics_20m, stei_chm_metrics_20m, tall_chm_metrics_20m, teak_chm_metrics_20m, tree_chm_metrics_20m, ukfs_chm_metrics_20m, unde_chm_metrics_20m, wref_chm_metrics_20m, yell_chm_metrics_20m)
+
+row.names(chm_complexity) = c("DELA" , "ORNL", "ABBY", "BART", "BLAN" , "BONA", "CLBJ", "DEJU", "GRSM", "GUAN", "HARV", "HEAL", "JERC", "KONZ", "LENO", "MLBS", "MOAB", "NIWO", "ONAQ", "OSBS", "PUUM", "RMNP", "SCBI", "SERC", "SJER", "SOAP", "STEI", "TALL", "TEAK", "TREE", "UKFS", "UNDE", "WREF", "YELL")
+
+dtm_complexity = rbind(dela_dtm_metrics_20m, ornl_dtm_metrics_20m, abby_dtm_metrics_20m, bart_dtm_metrics_20m, blan_dtm_metrics_20m, bona_dtm_metrics_20m, clbj_dtm_metrics_20m, deju_dtm_metrics_20m, grsm_dtm_metrics_20m, guan_dtm_metrics_20m, harv_dtm_metrics_20m, heal_dtm_metrics_20m, jerc_dtm_metrics_20m, konz_dtm_metrics_20m, leno_dtm_metrics_20m, mlbs_dtm_metrics_20m, moab_dtm_metrics_20m, niwo_dtm_metrics_20m, onaq_dtm_metrics_20m, osbs_dtm_metrics_20m, puum_dtm_metrics_20m, rmnp_dtm_metrics_20m, scbi_dtm_metrics_20m, serc_dtm_metrics_20m, sjer_dtm_metrics_20m, soap_dtm_metrics_20m, stei_dtm_metrics_20m, tall_dtm_metrics_20m, teak_dtm_metrics_20m, tree_dtm_metrics_20m, ukfs_dtm_metrics_20m, unde_dtm_metrics_20m, wref_dtm_metrics_20m, yell_dtm_metrics_20m)
+
+row.names(dtm_complexity) = c("DELA", "ORNL","ABBY", "BART", "BLAN" , "BONA", "CLBJ", "DEJU", "GRSM", "GUAN", "HARV", "HEAL", "JERC", "KONZ", "LENO", "MLBS", "MOAB", "NIWO", "ONAQ", "OSBS", "PUUM", "RMNP", "SCBI", "SERC", "SJER", "SOAP", "STEI", "TALL", "TEAK", "TREE", "UKFS", "UNDE", "WREF", "YELL")
+
+str_complexity = cbind(chm_complexity, dtm_complexity)
+write.csv(str_complexity, "str_complexity_20m.csv", row.names = TRUE)
+
+chm_complexity = rbind(dela_chm_metrics_25m, ornl_chm_metrics_25m, abby_chm_metrics_25m, bart_chm_metrics_25m, blan_chm_metrics_25m, bona_chm_metrics_25m, clbj_chm_metrics_25m, deju_chm_metrics_25m, grsm_chm_metrics_25m, guan_chm_metrics_25m, harv_chm_metrics_25m, heal_chm_metrics_25m, jerc_chm_metrics_25m, konz_chm_metrics_25m, leno_chm_metrics_25m, mlbs_chm_metrics_25m, moab_chm_metrics_25m, niwo_chm_metrics_25m, onaq_chm_metrics_25m, osbs_chm_metrics_25m, puum_chm_metrics_25m, rmnp_chm_metrics_25m, scbi_chm_metrics_25m, serc_chm_metrics_25m, sjer_chm_metrics_25m, soap_chm_metrics_25m, stei_chm_metrics_25m, tall_chm_metrics_25m, teak_chm_metrics_25m, tree_chm_metrics_25m, ukfs_chm_metrics_25m, unde_chm_metrics_25m, wref_chm_metrics_25m, yell_chm_metrics_25m)
+
+row.names(chm_complexity) = c("DELA" , "ORNL", "ABBY", "BART", "BLAN" , "BONA", "CLBJ", "DEJU", "GRSM", "GUAN", "HARV", "HEAL", "JERC", "KONZ", "LENO", "MLBS", "MOAB", "NIWO", "ONAQ", "OSBS", "PUUM", "RMNP", "SCBI", "SERC", "SJER", "SOAP", "STEI", "TALL", "TEAK", "TREE", "UKFS", "UNDE", "WREF", "YELL")
+
+dtm_complexity = rbind(dela_dtm_metrics_25m, ornl_dtm_metrics_25m, abby_dtm_metrics_25m, bart_dtm_metrics_25m, blan_dtm_metrics_25m, bona_dtm_metrics_25m, clbj_dtm_metrics_25m, deju_dtm_metrics_25m, grsm_dtm_metrics_25m, guan_dtm_metrics_25m, harv_dtm_metrics_25m, heal_dtm_metrics_25m, jerc_dtm_metrics_25m, konz_dtm_metrics_25m, leno_dtm_metrics_25m, mlbs_dtm_metrics_25m, moab_dtm_metrics_25m, niwo_dtm_metrics_25m, onaq_dtm_metrics_25m, osbs_dtm_metrics_25m, puum_dtm_metrics_25m, rmnp_dtm_metrics_25m, scbi_dtm_metrics_25m, serc_dtm_metrics_25m, sjer_dtm_metrics_25m, soap_dtm_metrics_25m, stei_dtm_metrics_25m, tall_dtm_metrics_25m, teak_dtm_metrics_25m, tree_dtm_metrics_25m, ukfs_dtm_metrics_25m, unde_dtm_metrics_25m, wref_dtm_metrics_25m, yell_dtm_metrics_25m)
+
+row.names(dtm_complexity) = c("DELA", "ORNL","ABBY", "BART", "BLAN" , "BONA", "CLBJ", "DEJU", "GRSM", "GUAN", "HARV", "HEAL", "JERC", "KONZ", "LENO", "MLBS", "MOAB", "NIWO", "ONAQ", "OSBS", "PUUM", "RMNP", "SCBI", "SERC", "SJER", "SOAP", "STEI", "TALL", "TEAK", "TREE", "UKFS", "UNDE", "WREF", "YELL")
+
+str_complexity = cbind(chm_complexity, dtm_complexity)
+write.csv(str_complexity, "str_complexity_25m.csv", row.names = TRUE)
+
+chm_complexity = rbind(dela_chm_metrics_30m, ornl_chm_metrics_30m, abby_chm_metrics_30m, bart_chm_metrics_30m, blan_chm_metrics_30m, bona_chm_metrics_30m, clbj_chm_metrics_30m, deju_chm_metrics_30m, grsm_chm_metrics_30m, guan_chm_metrics_30m, harv_chm_metrics_30m, heal_chm_metrics_30m, jerc_chm_metrics_30m, konz_chm_metrics_30m, leno_chm_metrics_30m, mlbs_chm_metrics_30m, moab_chm_metrics_30m, niwo_chm_metrics_30m, onaq_chm_metrics_30m, osbs_chm_metrics_30m, puum_chm_metrics_30m, rmnp_chm_metrics_30m, scbi_chm_metrics_30m, serc_chm_metrics_30m, sjer_chm_metrics_30m, soap_chm_metrics_30m, stei_chm_metrics_30m, tall_chm_metrics_30m, teak_chm_metrics_30m, tree_chm_metrics_30m, ukfs_chm_metrics_30m, unde_chm_metrics_30m, wref_chm_metrics_30m, yell_chm_metrics_30m)
+
+row.names(chm_complexity) = c("DELA" , "ORNL", "ABBY", "BART", "BLAN" , "BONA", "CLBJ", "DEJU", "GRSM", "GUAN", "HARV", "HEAL", "JERC", "KONZ", "LENO", "MLBS", "MOAB", "NIWO", "ONAQ", "OSBS", "PUUM", "RMNP", "SCBI", "SERC", "SJER", "SOAP", "STEI", "TALL", "TEAK", "TREE", "UKFS", "UNDE", "WREF", "YELL")
+
+dtm_complexity = rbind(dela_dtm_metrics_30m, ornl_dtm_metrics_30m, abby_dtm_metrics_30m, bart_dtm_metrics_30m, blan_dtm_metrics_30m, bona_dtm_metrics_30m, clbj_dtm_metrics_30m, deju_dtm_metrics_30m, grsm_dtm_metrics_30m, guan_dtm_metrics_30m, harv_dtm_metrics_30m, heal_dtm_metrics_30m, jerc_dtm_metrics_30m, konz_dtm_metrics_30m, leno_dtm_metrics_30m, mlbs_dtm_metrics_30m, moab_dtm_metrics_30m, niwo_dtm_metrics_30m, onaq_dtm_metrics_30m, osbs_dtm_metrics_30m, puum_dtm_metrics_30m, rmnp_dtm_metrics_30m, scbi_dtm_metrics_30m, serc_dtm_metrics_30m, sjer_dtm_metrics_30m, soap_dtm_metrics_30m, stei_dtm_metrics_30m, tall_dtm_metrics_30m, teak_dtm_metrics_30m, tree_dtm_metrics_30m, ukfs_dtm_metrics_30m, unde_dtm_metrics_30m, wref_dtm_metrics_30m, yell_dtm_metrics_30m)
+
+row.names(dtm_complexity) = c("DELA", "ORNL","ABBY", "BART", "BLAN" , "BONA", "CLBJ", "DEJU", "GRSM", "GUAN", "HARV", "HEAL", "JERC", "KONZ", "LENO", "MLBS", "MOAB", "NIWO", "ONAQ", "OSBS", "PUUM", "RMNP", "SCBI", "SERC", "SJER", "SOAP", "STEI", "TALL", "TEAK", "TREE", "UKFS", "UNDE", "WREF", "YELL")
+
+str_complexity = cbind(chm_complexity, dtm_complexity)
+write.csv(str_complexity, "str_complexity_30m.csv", row.names = TRUE)
+
+chm_complexity = rbind(dela_chm_metrics_40m, ornl_chm_metrics_40m, abby_chm_metrics_40m, bart_chm_metrics_40m, blan_chm_metrics_40m, bona_chm_metrics_40m, clbj_chm_metrics_40m, deju_chm_metrics_40m, grsm_chm_metrics_40m, guan_chm_metrics_40m, harv_chm_metrics_40m, heal_chm_metrics_40m, jerc_chm_metrics_40m, konz_chm_metrics_40m, leno_chm_metrics_40m, mlbs_chm_metrics_40m, moab_chm_metrics_40m, niwo_chm_metrics_40m, onaq_chm_metrics_40m, osbs_chm_metrics_40m, puum_chm_metrics_40m, rmnp_chm_metrics_40m, scbi_chm_metrics_40m, serc_chm_metrics_40m, sjer_chm_metrics_40m, soap_chm_metrics_40m, stei_chm_metrics_40m, tall_chm_metrics_40m, teak_chm_metrics_40m, tree_chm_metrics_40m, ukfs_chm_metrics_40m, unde_chm_metrics_40m, wref_chm_metrics_40m, yell_chm_metrics_40m)
+
+row.names(chm_complexity) = c("DELA" , "ORNL", "ABBY", "BART", "BLAN" , "BONA", "CLBJ", "DEJU", "GRSM", "GUAN", "HARV", "HEAL", "JERC", "KONZ", "LENO", "MLBS", "MOAB", "NIWO", "ONAQ", "OSBS", "PUUM", "RMNP", "SCBI", "SERC", "SJER", "SOAP", "STEI", "TALL", "TEAK", "TREE", "UKFS", "UNDE", "WREF", "YELL")
+
+dtm_complexity = rbind(dela_dtm_metrics_40m, ornl_dtm_metrics_40m, abby_dtm_metrics_40m, bart_dtm_metrics_40m, blan_dtm_metrics_40m, bona_dtm_metrics_40m, clbj_dtm_metrics_40m, deju_dtm_metrics_40m, grsm_dtm_metrics_40m, guan_dtm_metrics_40m, harv_dtm_metrics_40m, heal_dtm_metrics_40m, jerc_dtm_metrics_40m, konz_dtm_metrics_40m, leno_dtm_metrics_40m, mlbs_dtm_metrics_40m, moab_dtm_metrics_40m, niwo_dtm_metrics_40m, onaq_dtm_metrics_40m, osbs_dtm_metrics_40m, puum_dtm_metrics_40m, rmnp_dtm_metrics_40m, scbi_dtm_metrics_40m, serc_dtm_metrics_40m, sjer_dtm_metrics_40m, soap_dtm_metrics_40m, stei_dtm_metrics_40m, tall_dtm_metrics_40m, teak_dtm_metrics_40m, tree_dtm_metrics_40m, ukfs_dtm_metrics_40m, unde_dtm_metrics_40m, wref_dtm_metrics_40m, yell_dtm_metrics_40m)
+
+row.names(dtm_complexity) = c("DELA", "ORNL","ABBY", "BART", "BLAN" , "BONA", "CLBJ", "DEJU", "GRSM", "GUAN", "HARV", "HEAL", "JERC", "KONZ", "LENO", "MLBS", "MOAB", "NIWO", "ONAQ", "OSBS", "PUUM", "RMNP", "SCBI", "SERC", "SJER", "SOAP", "STEI", "TALL", "TEAK", "TREE", "UKFS", "UNDE", "WREF", "YELL")
+
+str_complexity = cbind(chm_complexity, dtm_complexity)
+write.csv(str_complexity, "str_complexity_40m.csv", row.names = TRUE)
+
+chm_complexity = rbind(dela_chm_metrics_50m, ornl_chm_metrics_50m, abby_chm_metrics_50m, bart_chm_metrics_50m, blan_chm_metrics_50m, bona_chm_metrics_50m, clbj_chm_metrics_50m, deju_chm_metrics_50m, grsm_chm_metrics_50m, guan_chm_metrics_50m, harv_chm_metrics_50m, heal_chm_metrics_50m, jerc_chm_metrics_50m, konz_chm_metrics_50m, leno_chm_metrics_50m, mlbs_chm_metrics_50m, moab_chm_metrics_50m, niwo_chm_metrics_50m, onaq_chm_metrics_50m, osbs_chm_metrics_50m, puum_chm_metrics_50m, rmnp_chm_metrics_50m, scbi_chm_metrics_50m, serc_chm_metrics_50m, sjer_chm_metrics_50m, soap_chm_metrics_50m, stei_chm_metrics_50m, tall_chm_metrics_50m, teak_chm_metrics_50m, tree_chm_metrics_50m, ukfs_chm_metrics_50m, unde_chm_metrics_50m, wref_chm_metrics_50m, yell_chm_metrics_50m)
+
+row.names(chm_complexity) = c("DELA" , "ORNL", "ABBY", "BART", "BLAN" , "BONA", "CLBJ", "DEJU", "GRSM", "GUAN", "HARV", "HEAL", "JERC", "KONZ", "LENO", "MLBS", "MOAB", "NIWO", "ONAQ", "OSBS", "PUUM", "RMNP", "SCBI", "SERC", "SJER", "SOAP", "STEI", "TALL", "TEAK", "TREE", "UKFS", "UNDE", "WREF", "YELL")
+
+dtm_complexity = rbind(dela_dtm_metrics_50m, ornl_dtm_metrics_50m, abby_dtm_metrics_50m, bart_dtm_metrics_50m, blan_dtm_metrics_50m, bona_dtm_metrics_50m, clbj_dtm_metrics_50m, deju_dtm_metrics_50m, grsm_dtm_metrics_50m, guan_dtm_metrics_50m, harv_dtm_metrics_50m, heal_dtm_metrics_50m, jerc_dtm_metrics_50m, konz_dtm_metrics_50m, leno_dtm_metrics_50m, mlbs_dtm_metrics_50m, moab_dtm_metrics_50m, niwo_dtm_metrics_50m, onaq_dtm_metrics_50m, osbs_dtm_metrics_50m, puum_dtm_metrics_50m, rmnp_dtm_metrics_50m, scbi_dtm_metrics_50m, serc_dtm_metrics_50m, sjer_dtm_metrics_50m, soap_dtm_metrics_50m, stei_dtm_metrics_50m, tall_dtm_metrics_50m, teak_dtm_metrics_50m, tree_dtm_metrics_50m, ukfs_dtm_metrics_50m, unde_dtm_metrics_50m, wref_dtm_metrics_50m, yell_dtm_metrics_50m)
+
+row.names(dtm_complexity) = c("DELA", "ORNL","ABBY", "BART", "BLAN" , "BONA", "CLBJ", "DEJU", "GRSM", "GUAN", "HARV", "HEAL", "JERC", "KONZ", "LENO", "MLBS", "MOAB", "NIWO", "ONAQ", "OSBS", "PUUM", "RMNP", "SCBI", "SERC", "SJER", "SOAP", "STEI", "TALL", "TEAK", "TREE", "UKFS", "UNDE", "WREF", "YELL")
+
+str_complexity = cbind(chm_complexity, dtm_complexity)
+write.csv(str_complexity, "str_complexity_50m.csv", row.names = TRUE)
+
+chm_complexity = rbind(dela_chm_metrics_60m, ornl_chm_metrics_60m, abby_chm_metrics_60m, bart_chm_metrics_60m, blan_chm_metrics_60m, bona_chm_metrics_60m, clbj_chm_metrics_60m, deju_chm_metrics_60m, grsm_chm_metrics_60m, guan_chm_metrics_60m, harv_chm_metrics_60m, heal_chm_metrics_60m, jerc_chm_metrics_60m, konz_chm_metrics_60m, leno_chm_metrics_60m, mlbs_chm_metrics_60m, moab_chm_metrics_60m, niwo_chm_metrics_60m, onaq_chm_metrics_60m, osbs_chm_metrics_60m, puum_chm_metrics_60m, rmnp_chm_metrics_60m, scbi_chm_metrics_60m, serc_chm_metrics_60m, sjer_chm_metrics_60m, soap_chm_metrics_60m, stei_chm_metrics_60m, tall_chm_metrics_60m, teak_chm_metrics_60m, tree_chm_metrics_60m, ukfs_chm_metrics_60m, unde_chm_metrics_60m, wref_chm_metrics_60m, yell_chm_metrics_60m)
+
+row.names(chm_complexity) = c("DELA" , "ORNL", "ABBY", "BART", "BLAN" , "BONA", "CLBJ", "DEJU", "GRSM", "GUAN", "HARV", "HEAL", "JERC", "KONZ", "LENO", "MLBS", "MOAB", "NIWO", "ONAQ", "OSBS", "PUUM", "RMNP", "SCBI", "SERC", "SJER", "SOAP", "STEI", "TALL", "TEAK", "TREE", "UKFS", "UNDE", "WREF", "YELL")
+
+dtm_complexity = rbind(dela_dtm_metrics_60m, ornl_dtm_metrics_60m, abby_dtm_metrics_60m, bart_dtm_metrics_60m, blan_dtm_metrics_60m, bona_dtm_metrics_60m, clbj_dtm_metrics_60m, deju_dtm_metrics_60m, grsm_dtm_metrics_60m, guan_dtm_metrics_60m, harv_dtm_metrics_60m, heal_dtm_metrics_60m, jerc_dtm_metrics_60m, konz_dtm_metrics_60m, leno_dtm_metrics_60m, mlbs_dtm_metrics_60m, moab_dtm_metrics_60m, niwo_dtm_metrics_60m, onaq_dtm_metrics_60m, osbs_dtm_metrics_60m, puum_dtm_metrics_60m, rmnp_dtm_metrics_60m, scbi_dtm_metrics_60m, serc_dtm_metrics_60m, sjer_dtm_metrics_60m, soap_dtm_metrics_60m, stei_dtm_metrics_60m, tall_dtm_metrics_60m, teak_dtm_metrics_60m, tree_dtm_metrics_60m, ukfs_dtm_metrics_60m, unde_dtm_metrics_60m, wref_dtm_metrics_60m, yell_dtm_metrics_60m)
+
+row.names(dtm_complexity) = c("DELA", "ORNL","ABBY", "BART", "BLAN" , "BONA", "CLBJ", "DEJU", "GRSM", "GUAN", "HARV", "HEAL", "JERC", "KONZ", "LENO", "MLBS", "MOAB", "NIWO", "ONAQ", "OSBS", "PUUM", "RMNP", "SCBI", "SERC", "SJER", "SOAP", "STEI", "TALL", "TEAK", "TREE", "UKFS", "UNDE", "WREF", "YELL")
+
+str_complexity = cbind(chm_complexity, dtm_complexity)
+write.csv(str_complexity, "str_complexity_60m.csv", row.names = TRUE)
+
+chm_complexity = rbind(dela_chm_metrics_70m, ornl_chm_metrics_70m, abby_chm_metrics_70m, bart_chm_metrics_70m, blan_chm_metrics_70m, bona_chm_metrics_70m, clbj_chm_metrics_70m, deju_chm_metrics_70m, grsm_chm_metrics_70m, guan_chm_metrics_70m, harv_chm_metrics_70m, heal_chm_metrics_70m, jerc_chm_metrics_70m, konz_chm_metrics_70m, leno_chm_metrics_70m, mlbs_chm_metrics_70m, moab_chm_metrics_70m, niwo_chm_metrics_70m, onaq_chm_metrics_70m, osbs_chm_metrics_70m, puum_chm_metrics_70m, rmnp_chm_metrics_70m, scbi_chm_metrics_70m, serc_chm_metrics_70m, sjer_chm_metrics_70m, soap_chm_metrics_70m, stei_chm_metrics_70m, tall_chm_metrics_70m, teak_chm_metrics_70m, tree_chm_metrics_70m, ukfs_chm_metrics_70m, unde_chm_metrics_70m, wref_chm_metrics_70m, yell_chm_metrics_70m)
+
+row.names(chm_complexity) = c("DELA" , "ORNL", "ABBY", "BART", "BLAN" , "BONA", "CLBJ", "DEJU", "GRSM", "GUAN", "HARV", "HEAL", "JERC", "KONZ", "LENO", "MLBS", "MOAB", "NIWO", "ONAQ", "OSBS", "PUUM", "RMNP", "SCBI", "SERC", "SJER", "SOAP", "STEI", "TALL", "TEAK", "TREE", "UKFS", "UNDE", "WREF", "YELL")
+
+dtm_complexity = rbind(dela_dtm_metrics_70m, ornl_dtm_metrics_70m, abby_dtm_metrics_70m, bart_dtm_metrics_70m, blan_dtm_metrics_70m, bona_dtm_metrics_70m, clbj_dtm_metrics_70m, deju_dtm_metrics_70m, grsm_dtm_metrics_70m, guan_dtm_metrics_70m, harv_dtm_metrics_70m, heal_dtm_metrics_70m, jerc_dtm_metrics_70m, konz_dtm_metrics_70m, leno_dtm_metrics_70m, mlbs_dtm_metrics_70m, moab_dtm_metrics_70m, niwo_dtm_metrics_70m, onaq_dtm_metrics_70m, osbs_dtm_metrics_70m, puum_dtm_metrics_70m, rmnp_dtm_metrics_70m, scbi_dtm_metrics_70m, serc_dtm_metrics_70m, sjer_dtm_metrics_70m, soap_dtm_metrics_70m, stei_dtm_metrics_70m, tall_dtm_metrics_70m, teak_dtm_metrics_70m, tree_dtm_metrics_70m, ukfs_dtm_metrics_70m, unde_dtm_metrics_70m, wref_dtm_metrics_70m, yell_dtm_metrics_70m)
+
+row.names(dtm_complexity) = c("DELA", "ORNL","ABBY", "BART", "BLAN" , "BONA", "CLBJ", "DEJU", "GRSM", "GUAN", "HARV", "HEAL", "JERC", "KONZ", "LENO", "MLBS", "MOAB", "NIWO", "ONAQ", "OSBS", "PUUM", "RMNP", "SCBI", "SERC", "SJER", "SOAP", "STEI", "TALL", "TEAK", "TREE", "UKFS", "UNDE", "WREF", "YELL")
+
+str_complexity = cbind(chm_complexity, dtm_complexity)
+write.csv(str_complexity, "str_complexity_70m.csv", row.names = TRUE)
+
+chm_complexity = rbind(dela_chm_metrics_100m, ornl_chm_metrics_100m, abby_chm_metrics_100m, bart_chm_metrics_100m, blan_chm_metrics_100m, bona_chm_metrics_100m, clbj_chm_metrics_100m, deju_chm_metrics_100m, grsm_chm_metrics_100m, guan_chm_metrics_100m, harv_chm_metrics_100m, heal_chm_metrics_100m, jerc_chm_metrics_100m, konz_chm_metrics_100m, leno_chm_metrics_100m, mlbs_chm_metrics_100m, moab_chm_metrics_100m, niwo_chm_metrics_100m, onaq_chm_metrics_100m, osbs_chm_metrics_100m, puum_chm_metrics_100m, rmnp_chm_metrics_100m, scbi_chm_metrics_100m, serc_chm_metrics_100m, sjer_chm_metrics_100m, soap_chm_metrics_100m, stei_chm_metrics_100m, tall_chm_metrics_100m, teak_chm_metrics_100m, tree_chm_metrics_100m, ukfs_chm_metrics_100m, unde_chm_metrics_100m, wref_chm_metrics_100m, yell_chm_metrics_100m)
+
+row.names(chm_complexity) = c("DELA" , "ORNL", "ABBY", "BART", "BLAN" , "BONA", "CLBJ", "DEJU", "GRSM", "GUAN", "HARV", "HEAL", "JERC", "KONZ", "LENO", "MLBS", "MOAB", "NIWO", "ONAQ", "OSBS", "PUUM", "RMNP", "SCBI", "SERC", "SJER", "SOAP", "STEI", "TALL", "TEAK", "TREE", "UKFS", "UNDE", "WREF", "YELL")
+
+dtm_complexity = rbind(dela_dtm_metrics_100m, ornl_dtm_metrics_100m, abby_dtm_metrics_100m, bart_dtm_metrics_100m, blan_dtm_metrics_100m, bona_dtm_metrics_100m, clbj_dtm_metrics_100m, deju_dtm_metrics_100m, grsm_dtm_metrics_100m, guan_dtm_metrics_100m, harv_dtm_metrics_100m, heal_dtm_metrics_100m, jerc_dtm_metrics_100m, konz_dtm_metrics_100m, leno_dtm_metrics_100m, mlbs_dtm_metrics_100m, moab_dtm_metrics_100m, niwo_dtm_metrics_100m, onaq_dtm_metrics_100m, osbs_dtm_metrics_100m, puum_dtm_metrics_100m, rmnp_dtm_metrics_100m, scbi_dtm_metrics_100m, serc_dtm_metrics_100m, sjer_dtm_metrics_100m, soap_dtm_metrics_100m, stei_dtm_metrics_100m, tall_dtm_metrics_100m, teak_dtm_metrics_100m, tree_dtm_metrics_100m, ukfs_dtm_metrics_100m, unde_dtm_metrics_100m, wref_dtm_metrics_100m, yell_dtm_metrics_100m)
+
+row.names(dtm_complexity) = c("DELA", "ORNL","ABBY", "BART", "BLAN" , "BONA", "CLBJ", "DEJU", "GRSM", "GUAN", "HARV", "HEAL", "JERC", "KONZ", "LENO", "MLBS", "MOAB", "NIWO", "ONAQ", "OSBS", "PUUM", "RMNP", "SCBI", "SERC", "SJER", "SOAP", "STEI", "TALL", "TEAK", "TREE", "UKFS", "UNDE", "WREF", "YELL")
+
+str_complexity = cbind(chm_complexity, dtm_complexity)
+write.csv(str_complexity, "str_complexity_100m.csv", row.names = TRUE)
+```

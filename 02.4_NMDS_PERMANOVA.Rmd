@@ -1,0 +1,205 @@
+---
+title: "NMDS for MDI"
+author: "1st Author"
+date: "2023-04-03"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#### Load libraries
+```{r, error = T}
+#install.packages(c("funrar", "ecodist", "vegan", "ggplot2"))
+library(funrar) #for relative abundance calculations
+library(vegan)
+library(ggplot2)
+library(ecodist)
+library(readr)
+```
+
+##### Download the multi/beetle/multi *_occ.csv files
+###### Read CSV Files
+```{r}
+bird_occ <- read_csv("~/input_data_files/diversity_data/bird_occ.csv")
+bird_occ = bird_occ[,-c(468,469)]
+
+beetle_occ <- read_csv("~/input_data_files/diversity_data/beetle_occ.csv")
+beetle_occ = beetle_occ[,-c(468,469)]
+
+plant_occ <- read_csv("~/input_data_files/diversity_data/plant_occ.csv")
+plant_occ = plant_occ[, -c(5626, 5627)]
+
+#Merge Species occurrence data for all sites
+multi_occ = merge(beetle_occ, bird_occ, by = "siteID")
+multi_occ = merge(multi_occ, plant_occ, by = "siteID")
+
+#write.csv(multi_occ, "multi_occ.csv")
+```
+
+##### Read in data with multi-trophic diversity and structural complexity data
+```{r}
+multi_div <- read.csv("md_str_11_10_2023.csv")
+
+colnames(multi_div)[3] <- "plH" #plant shannon
+colnames(multi_div)[4] <- "beH" #beetle shannon
+colnames(multi_div)[5] <- "biH" #bird shannon
+colnames(multi_div)[6] <- "md" #multi shannon
+
+#Select the least correlated matrics, re corrplot
+env_all = multi_div[,c("md", "lat", "lon", "MAP", "MAT", "r.._50m", "mmh.", "X40_95h", "rumple.", "VAI.", "dgf._100m")]
+
+colnames(env_all)[1] <- "shannon_md"
+colnames(env_all)[6] <- "cr"
+colnames(env_all)[7] <- "mh"
+colnames(env_all)[8] <- "h"
+colnames(env_all)[9] <- "rum"
+colnames(env_all)[10] <- "VAI"
+colnames(env_all)[11] <- "dgf"
+
+env_all = env_all[,c(2:11)]
+
+#write.csv(env_all, "env_sites_new.csv")
+#env_all will be used in all nmds plots
+```
+
+###### Working with multi Data First
+####### Get Relative Abundance then make nmds plots
+```{r}
+# Make Matrix and calculate relative abundance of multitrophic diversity
+matrix = as.matrix(multi_occ[,c(2:6557)])
+abun = make_relative(matrix)
+
+#write.csv(abun, "multidiv_abun.csv")
+
+#Using vegan package let's get NMDS
+nmds_multi = metaMDS(abun, engine = "monoMDS") 
+plot(nmds_multi$points)
+
+#See summary of NMDS
+nmds_multi
+
+#Plot stressplot
+summary(stressplot(nmds_multi))
+```
+
+```{r}
+#Make dataframe of nmds scores in preparation for ggplot2
+site_scores = data.frame(scores(nmds_multi, "sites")) 
+site_scores$siteID = multi_occ$siteID
+site_scores
+
+env_var = envfit(nmds_multi, env_all, permutations = 999)
+env_var
+
+
+#For continuous data
+env_coord_cont =as.data.frame(scores(env_var, "vectors")) * ordiArrowMul(env_var) * 2 #multiplied by 2 to better see data
+
+env_scores_sub <- cbind(env_coord_cont, pval = env_var$vectors$pvals) # add p-values to data frame
+
+#All values were significant, but if they were not, I could plot the significant ones
+#Subset for significant ones
+sig_env <- subset(env_scores_sub, pval<=0.05)
+
+rv1 = as.data.frame(env_var$vectors$r)
+rv1 = as.data.frame(rv1[c(1:7,8),])
+
+#Remove rows that were not significant
+sig_env = cbind(sig_env, rv1)
+colnames(sig_env)[4] = "R2"
+
+#Add 0th column to the data frame
+sig_env <- cbind(sig_env, env_str = rownames(sig_env))
+
+#View significant variables
+print(sig_env)
+sig_env
+
+#write.csv(sig_env, "sig_env_correlated.csv")
+```
+
+##### Plot NMDS
+######Without labels
+```{r}
+tiff('nmds_nonlabel_wlegend.tiff', units="in", width = 10, height=6, res=600, compression = 'lzw')
+
+#Plot
+ggplot(data = site_scores, aes(x = NMDS1, y = NMDS2, color = env_all$forest_type)) + 
+     geom_point(data = site_scores, aes(shape = env_all$forest_type, fill = env_all$forest_type), size = 10, alpha = 0.7) +
+  stat_ellipse(linetype = 2, size = 1, alpha = 0.5) +
+  scale_shape_manual(values = c(22, 24, 21)) +
+     geom_segment(aes(x = 0, y = 0, xend = NMDS1, yend = NMDS2), 
+      data = sig_env, size =1, alpha = 0.7, colour = "black") +
+  scale_color_manual(values = c("Mixed" = "#00CCFF", "Deciduous" = "#E7298A",
+                                "Evergreen" = "darkgreen")) +
+  scale_fill_manual(values = c("Mixed" = "#00CCFF", "Deciduous" = "#E7298A",
+                                "Evergreen" = "darkgreen")) +
+     #geom_text(data = sig_env, aes(x = NMDS1, y = NMDS2), size = 5, colour = "black", 
+       #fontface = "bold", label = sig_env$env_str) +
+     theme(axis.ticks.length = unit(-0.25, "cm"), axis.title = element_text(size = 20, face = "bold", colour = "black"), 
+       panel.background = element_blank(), panel.border = element_rect(fill = NA, colour = "black"), 
+       axis.text = element_blank(), legend.key = element_blank())+ #, 
+       #legend.title = element_text(size = 12, face = "bold", colour = "black"), 
+       #legend.text = element_text(size = 10, colour = "black")) + 
+     #labs(col = "Forest Type")
+  #theme(legend.position = "left") +
+  theme(text = element_text(size = 20), axis.text =  element_text(size = 20, color = "black")) +
+  ylim(-5, 5) +
+  xlim(-5, 5)
+
+dev.off()
+```
+
+###### With labels
+```{r}
+tiff('nmds_labeled_wlegend.tiff', units="in", width = 10, height=6, res=600, compression = 'lzw')
+
+#Plot
+ggplot(data = site_scores, aes(x = NMDS1, y = NMDS2, color = env_all$forest_type)) + 
+     geom_point(data = site_scores, aes(shape = env_all$forest_type, fill = env_all$forest_type), size = 10, alpha = 0.7) +
+  stat_ellipse(linetype = 2, size = 1, alpha = 0.5) +
+  scale_shape_manual(values = c(22, 24, 21)) +
+     geom_segment(aes(x = 0, y = 0, xend = NMDS1, yend = NMDS2), 
+      data = sig_env, size =1, alpha = 0.7, colour = "black") +
+  scale_color_manual(values = c("Mixed" = "#00CCFF", "Deciduous" = "#E7298A",
+                                "Evergreen" = "darkgreen")) +
+  scale_fill_manual(values = c("Mixed" = "#00CCFF", "Deciduous" = "#E7298A",
+                                "Evergreen" = "darkgreen")) +
+     geom_text(data = sig_env, aes(x = NMDS1, y = NMDS2), size = 5, colour = "black", 
+       fontface = "bold", label = sig_env$env_str) +
+     theme(axis.ticks.length = unit(-0.25, "cm"), axis.title = element_text(size = 20, face = "bold", colour = "black"), 
+       panel.background = element_blank(), panel.border = element_rect(fill = NA, colour = "black"), 
+       axis.text = element_blank(), legend.key = element_blank())+ #, 
+       #legend.title = element_text(size = 12, face = "bold", colour = "black"), 
+       #legend.text = element_text(size = 10, colour = "black")) + 
+     #labs(col = "Forest Type")
+  #theme(legend.position = "left") +
+  theme(text = element_text(size = 20), axis.text =  element_text(size = 20, color = "black")) +
+  ylim(-5, 5) +
+  xlim(-5, 5)
+
+dev.off()
+
+```
+
+#### Conduct ANOSIM on NMDS Results to test if the pattern that we see (separation of forest type) is significant
+```{r}
+env_anosim = env_all[,11]
+
+anosim_result = anosim(abun, env_anosim, distance = "bray", permutations = 9999)
+summary(anosim_result)
+plot(anosim_result, fill = "forest_type")
+
+#ANOSIM result
+print(anosim_result)
+
+#Access R statistic
+r_statistic <- anosim_result$statistic
+print(paste("R statistic:", r_statistic))
+
+#Access p-value
+p_value <- anosim_result$signif
+print(paste("p-value:", p_value))
+```

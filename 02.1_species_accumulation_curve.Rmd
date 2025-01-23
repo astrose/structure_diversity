@@ -1,0 +1,305 @@
+---
+title: "Species Accummulation Curve for NEON Forested Sites"
+author: "1st Author"
+date: "4/2/2023"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Load Libraries
+```{r, error = T}
+#install.packages("janitor")
+#install.packages("BiodiversityR")
+#install.packages("patchwork")
+library(patchwork)
+library(janitor)
+library(ggplot2)
+library(vegan)
+library(tidyr)
+library(tidyverse)
+```
+
+#### Source "full_data" files
+#### Run species accululation curve for beetles
+```{r, error = TRUE, echo=FALSE}
+#Read in csv file containing full beetle data
+beetle = read.csv("~/input_data_files/diversity_data/beetle_full_data.csv", header = T)
+
+#Clean data
+##Remove NAs in taxon ID column
+beetle_1 = beetle %>% drop_na(taxonID)
+
+##Remove unknown species
+beetle_1 <-beetle_1[!(beetle_1$specificEpithet=="sp."),]
+
+#Change format of collect dates to years
+beetle_1$collectDate = data.frame(format(as.Date(beetle_1$collectDate, format = "%Y-%m-%d"), "%Y"))
+
+#Rename collect date column name to "year"
+#Need to change between dataframe and matrix format so R can allow column name change
+beetle_1 = as.matrix(beetle_1)
+beetle_1 = data.frame(beetle_1)
+names(beetle_1)[7] = "year"
+
+#Creating dataframes to join in combined later
+c1 = beetle_1
+
+#Subset Beetle occurrence data
+#Only sorted by collect date
+#Quantify beetle occurrence
+#Using Tably to group, requires janitor package
+#Group by species
+beetle_occ = beetle_1 %>%
+  tabyl(year, taxonID, siteID, sort = TRUE, head = TRUE)
+
+#Remove NA_ from list
+beetle_occ = within(beetle_occ, rm(NA_))
+
+#Remove the year column in each element in list
+beetle_occ = lapply(beetle_occ, function(x) x[!(names(x) %in% c("year"))])
+
+
+#Run species accumulation function on all elements in the list
+##Create function of species accumulation
+sp_acc_function <- function(x) {
+  specaccum(x)}
+
+##Run function on list
+beetle_occ = lapply(beetle_occ, sp_acc_function)
+#run specaccum on list
+
+#Plot pecies accumulation curve for all sites and put it in a list
+#Have a list of appropriate years to use as x-axis
+years = c("2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021")
+
+p = Map(function(x) ggplot(beetle_occ$x) + 
+                         geom_line(aes(x = years, y = x$richness), size = 1) +
+                         geom_point(aes(x = years, y = x$richness), alpha = 0.5, size = 2, color = "darkgreen") +
+      geom_ribbon(data=beetle_occ$x ,aes(x = x$sites, ymin = (x$richness -x$sd),ymax = (x$richness+x$sd)), alpha=0.2, fill = "darkgreen") +
+      theme(axis.ticks.length=unit(-0.25, "cm")) +
+       theme_bw() +
+      theme(axis.text.y =  element_text(size = 12, color = "black"), axis.text.x = element_text(size = 12)) +
+         scale_x_discrete(guide = guide_axis(check.overlap = TRUE)) +
+      theme(panel.grid = element_blank()) +
+      theme( axis.line = element_line(colour = "black", size = 1, linetype = "solid")) +
+                           xlab("Years") +
+                           ylab("Richness"), beetle_occ)
+
+
+#Create a list of ggplot objects with titles
+p_with_titles <- Map(function(plot, title) {
+  plot +
+    labs(title = title) +
+    theme(plot.title = element_text(hjust = 0.5))
+}, p, names(p))
+
+#Set the layout
+layout <- matrix(1:length(p), ncol = 5, byrow = TRUE)
+
+#Create a combined plot
+combined_plot <- wrap_plots(p_with_titles, ncol = 5)
+
+#Save the combined plot to an image file
+ggsave("beetle_specaccum.png", combined_plot, width = 15, height = 15, units = "in", dpi = 300)
+```
+
+#### Run species accumulation curve for plants
+```{r}
+plant = read.csv("~/input_data_files/diversity_data/plant_full_data.csv", header = T)
+#Plant occurrence only sorted by siteID
+#Quantify plant occurrence
+#Group by specific epithet and site ID
+
+#Clean data
+##Remove NAs in taxon ID column
+plant_1 = plant %>% drop_na(taxonID)
+
+##Remove unknown species or don't
+#plant_1 = plant_1[!(plant_1$taxonID == c("2PLANT","2PLANT-H", "2PLANT-S")),]
+
+#Creating dataframes to join in combined later
+colnames(plant_1)[8] <- "siteID"
+c2 = plant_1
+
+#Subset plant occurrence data
+#Only sorted by collect date
+#Quantify plant occurrence
+#Using Tably to group, requires janitor package
+#Group by species
+plant_occ = plant_1 %>%
+  tabyl(year, taxonID, siteID, sort = TRUE, head = TRUE)
+
+#Remove the year column in each element in list
+plant_occ = lapply(plant_occ, function(x) x[!(names(x) %in% c("year"))])
+
+##Run function on list
+plant_occ = lapply(plant_occ, sp_acc_function)
+
+#Run specaccum on list
+#Plot pecies accumulation curve for all sites and put it in a list
+#Have a list of appropriate years to use as x-axis
+years = c("2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022")
+
+p = Map(function(x) ggplot(plant_occ$x) + 
+                         geom_line(aes(x = years, y = x$richness), size = 1) +
+                         geom_point(aes(x = years, y = x$richness), alpha = 0.5, size = 2, color = "darkgreen") +
+      geom_ribbon(data = plant_occ$x ,aes(x = x$sites, ymin = (x$richness -x$sd),ymax = (x$richness+x$sd)), alpha=0.2, fill = "darkgreen") +
+      theme(axis.ticks.length=unit(-0.25, "cm")) +
+       theme_bw() +
+      theme(axis.text.y =  element_text(size = 12, color = "black"), axis.text.x = element_text(size = 12)) +
+         scale_x_discrete(guide = guide_axis(check.overlap = TRUE)) +
+      theme(panel.grid = element_blank()) +
+      theme( axis.line = element_line(colour = "black", size = 1, linetype = "solid")) +
+                           xlab("Years") +
+                           ylab("Richness"), plant_occ)
+
+
+#Create a list of ggplot objects with titles
+p_with_titles <- Map(function(plot, title) {
+  plot +
+    labs(title = title) +
+    theme(plot.title = element_text(hjust = 0.5))
+}, p, names(p))
+
+#Set the layout
+layout <- matrix(1:length(p), ncol = 5, byrow = TRUE)
+
+#Create a combined plot
+combined_plot <- wrap_plots(p_with_titles, ncol = 5)
+
+#Save the combined plot to an image file
+ggsave("plant_specaccum.png", combined_plot, width = 15, height = 15, units = "in", dpi = 300)
+```
+
+#### Run species accumulation curve for birds
+```{r}
+bird = read.csv("~/input_data_files/diversity_data/bird_full_data.csv", header = T)
+
+#Clean data
+##Remove NAs in taxon ID column
+bird_1 = bird %>% drop_na(taxonID)
+#bird data was already cleaned
+
+#Change format of collect dates to years
+bird_1$startDate = data.frame(format(as.Date(bird_1$startDate, format = "%Y-%m-%d"), "%Y"))
+
+#Rename collect date column name to "year"
+#Need to change between dataframe and matrix format so R can allow column name change
+bird_1 = as.matrix(bird_1)
+bird_1 = data.frame(bird_1)
+names(bird_1)[9] = "year"
+
+#Creating dataframes to join in combined later
+c3 = bird_1
+
+#Subset bird occurrence data
+#Only sorted by collect date
+#Quantify bird occurrence
+#Using Tably to group, requires janitor package
+#Group by species
+bird_occ = bird_1 %>%
+  tabyl(year, taxonID, siteID, sort = TRUE, head = TRUE)
+
+#Remove the year column in each element in list
+bird_occ = lapply(bird_occ, function(x) x[!(names(x) %in% c("year"))])
+
+#Run species accumulation function on all elements in the list
+bird_occ = lapply(bird_occ, sp_acc_function)
+#run specaccum on list
+
+#Plot pecies accumulation curve for all sites and put it in a list
+#Have a list of appropriate years to use as x-axis
+years = c("2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022")
+
+p = Map(function(x) ggplot(bird_occ$x) + 
+                         geom_line(aes(x = years, y = x$richness), size = 1) +
+                         geom_point(aes(x = years, y = x$richness), alpha = 0.5, size = 2, color = "darkgreen") +
+      geom_ribbon(data = bird_occ$x ,aes(x = x$sites, ymin = (x$richness -x$sd),ymax = (x$richness+x$sd)), alpha=0.2, fill = "darkgreen") +
+      theme(axis.ticks.length=unit(-0.25, "cm")) +
+       theme_bw() +
+      theme(axis.text.y =  element_text(size = 12, color = "black"), axis.text.x = element_text(size = 12)) +
+         scale_x_discrete(guide = guide_axis(check.overlap = TRUE)) +
+      theme(panel.grid = element_blank()) +
+      theme( axis.line = element_line(colour = "black", size = 1, linetype = "solid")) +
+                           xlab("Years") +
+                           ylab("Richness"), bird_occ)
+
+
+#Create a list of ggplot objects with titles
+p_with_titles <- Map(function(plot, title) {
+  plot +
+    labs(title = title) +
+    theme(plot.title = element_text(hjust = 0.5))
+}, p, names(p))
+
+#Set the layout
+layout <- matrix(1:length(p), ncol = 5, byrow = TRUE)
+
+#Create a combined plot
+combined_plot <- wrap_plots(p_with_titles, ncol = 5)
+
+#Save the combined plot to an image file
+ggsave("bird_specaccum.png", combined_plot, width = 15, height = 15, units = "in", dpi = 300)
+```
+
+### Construct a multitrophic Sp. Accumulation Curve
+```{r}
+#Make new datasets contining siteID, species, and year
+c_be = as.data.frame(c1[,c("siteID", "taxonID", "year")])
+c_pl = as.data.frame(c2[,c("siteID", "taxonID", "year")])
+c_bi = as.data.frame(c3[,c("siteID", "taxonID", "year")])
+
+#Combine columns by siteID
+combined = rbind(c_be, c_pl, c_bi)
+
+#Group by siteID
+combined_occ = combined %>%
+  tabyl(year, taxonID, siteID, sort = TRUE, head = TRUE)
+
+#Remove NA_ from list
+combined_occ = within(combined_occ, rm("NA_"))
+
+#Remove the year column in each element in list
+combined_occ = lapply(combined_occ, function(x) x[!(names(x) %in% c("year"))])
+
+#Run species accumulation function on all elements in the list
+combined_occ = lapply(combined_occ, sp_acc_function)
+#run specaccum on list
+
+#Plot pecies accumulation curve for all sites and put it in a list
+#Have a list of appropriate years to use as x-axis
+years = c("2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022")
+
+p = Map(function(x) ggplot(combined_occ$x) + 
+                         geom_line(aes(x = years, y = x$richness), size = 1) +
+                         geom_point(aes(x = years, y = x$richness), alpha = 0.5, size = 2, color = "darkgreen") +
+      geom_ribbon(data = combined_occ$x ,aes(x = x$sites, ymin = (x$richness -x$sd),ymax = (x$richness+x$sd)), alpha=0.2, fill = "darkgreen") +
+      theme(axis.ticks.length=unit(-0.25, "cm")) +
+       theme_bw() +
+      theme(axis.text.y =  element_text(size = 12, color = "black"), axis.text.x = element_text(size = 12)) +
+         scale_x_discrete(guide = guide_axis(check.overlap = TRUE)) +
+      theme(panel.grid = element_blank()) +
+      theme( axis.line = element_line(colour = "black", size = 1, linetype = "solid")) +
+                           xlab("Years") +
+                           ylab("Richness"), combined_occ)
+
+
+#Create a list of ggplot objects with titles
+p_with_titles <- Map(function(plot, title) {
+  plot +
+    labs(title = title) +
+    theme(plot.title = element_text(hjust = 0.5))
+}, p, names(p))
+
+#Set the layout
+layout <- matrix(1:length(p), ncol = 5, byrow = TRUE)
+
+#Create a combined plot
+combined_plot <- wrap_plots(p_with_titles, ncol = 5)
+
+#Save the combined plot to an image file
+ggsave("combined_specaccum.png", combined_plot, width = 15, height = 15, units = "in", dpi = 300)
+```

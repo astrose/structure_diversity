@@ -1,0 +1,67 @@
+---
+title: "Corrplot_multi_div"
+author: "1st Author"
+date: "2023-04-03"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+##### Load libraries
+```{r, error = T}
+#install.packages("corrplot")
+library(corrplot)
+
+#install.packages("Hmisc")
+library(Hmisc)
+```
+
+##### Download data table containing diversity and structural complexity information
+###### Read CSV Files
+```{r}
+multi_div <- read.csv("md_str_11_10_2023.csv")
+
+#Rename multi-trophic diversity index and total richness
+#colnames(multi_div)[7] <- "md" #multi shannon
+#colnames(multi_div)[210] <- "rich" #total richness
+```
+
+##### Corrplot including multi-trophic diversity w/ structure
+```{r}
+#Corrplot containing multi-trophic diversity index and metrics
+#cp = multi_div[,-c(1:5, 7:10, 46, 205:209)]
+cp = multi_div[,-c(1:5, 46, 205:209)]
+#Run Pearson Correlation on subset of data for 1m data
+cp = rcorr(as.matrix(cp), type = "spearman")
+
+#Extract pvalues
+p_val = cp$P
+
+#Extract correlation values
+cp = cp$r
+
+#Write pvalues and correlation values to csv
+write.csv(cp, "corr_full_new.csv")
+write.csv(p_val, "corr_pval_full_new.csv")
+```
+
+```{r}
+#Corrplot containing multi-trophic diversity index and metrics
+cp = multi_div[,-c(1:10, 46, 205:209)]
+
+#Run Pearson Correlation on subset of data for 1m data
+cp = rcorr(as.matrix(cp), type = "spearman")
+
+#Extract pvalues
+p_val = cp$P
+
+#Extract correlation values
+cp = cp$r
+
+#Write pvalues and correlation values to csv
+write.csv(cp, "corr_metrics.csv")
+write.csv(p_val, "corr_metrics_full.csv")
+```

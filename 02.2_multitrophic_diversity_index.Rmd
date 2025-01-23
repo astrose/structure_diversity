@@ -1,0 +1,109 @@
+---
+title: "Scaling for Construction of Multi-Trophic Diversity"
+author: "1st Author"
+date: "2023-02-23"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+##### Load Libraries
+```{r}
+library(dplyr)
+library(tidyverse)
+library(neonUtilities)
+library(multcomp)
+library(janitor)
+library(vegan)
+```
+
+###### Using datatables from diversity code output
+###### Load data tables with diversity information
+```{r}
+plant_div = read.csv("~/input_data_files/plant_div_indices.csv")
+
+#Rename the columns to including plant to prepare for merging
+colnames(plant_div)[3] <- "plant_shannon"
+colnames(plant_div)[4] <- "plant_simpson"
+colnames(plant_div)[5] <- "plant_richness"
+colnames(plant_div)[6] <- "plant_tot_org"
+
+beetle_div = read.csv("~/input_data_files/beetle_div_indices.csv") 
+
+#Rename the columns to including beetle to prepare for merging
+colnames(beetle_div)[3] <- "beetle_shannon"
+colnames(beetle_div)[4] <- "beetle_simpson"
+colnames(beetle_div)[5] <- "beetle_richness"
+colnames(beetle_div)[6] <- "beetle_tot_org"
+
+bird_div = read.csv("~/input_data_files/bird_div_indices.csv")
+
+#Rename the columns to including bird to prepare for merging
+colnames(bird_div)[3] <- "bird_shannon"
+colnames(bird_div)[4] <- "bird_simpson"
+colnames(bird_div)[5] <- "bird_richness"
+colnames(bird_div)[6] <- "bird_tot_org"
+```
+
+###### Merge diversity tables
+```{r}
+multi_div = merge(plant_div, beetle_div, by = "siteID")
+multi_div = merge(multi_div, bird_div, by = "siteID")
+
+#Remove empty columns
+#multi_div = data.frame(multi_div[,-c(2,7,12)])
+
+#multi_div = multi_div %>% remove_rownames %>% column_to_rownames(var="siteID")
+
+#Scale from 0.1 to 1, so diversity would not be 0
+scale_values <- function(x){(x-min(x))/(max(x)-min(x)) * (1-0.1) + 0.1}
+
+multi_div$plant_shannon_scaled = scale_values(multi_div$Shannon_plant)
+multi_div$plant_simpson_scaled = scale_values(multi_div$Simpson_plant)
+multi_div$plant_richness_scaled = scale_values(multi_div$Richness_plant)
+multi_div$plant_Chao_scaled = scale_values(multi_div$Chao1_plant)
+multi_div$plant_ACE_scaled = scale_values(multi_div$ACE_plant)
+
+multi_div$bird_shannon_scaled = scale_values(multi_div$Shannon_bird)
+multi_div$bird_simpson_scaled = scale_values(multi_div$Simpson_bird)
+multi_div$bird_richness_scaled = scale_values(multi_div$Richness_bird)
+multi_div$bird_Chao_scaled = scale_values(multi_div$Chao1_bird)
+multi_div$bird_ACE_scaled = scale_values(multi_div$ACE_bird)
+
+
+multi_div$beetle_shannon_scaled = scale_values(multi_div$Shannon_Beetle)
+multi_div$beetle_simpson_scaled = scale_values(multi_div$Simpson_Beetle)
+multi_div$beetle_richness_scaled = scale_values(multi_div$Richness_Beetle)
+multi_div$beetle_Chao_scaled = scale_values(multi_div$Chao1_Beetle)
+multi_div$beetle_ACE_scaled = scale_values(multi_div$ACE_Beetle)
+
+#multi_div$siteID = beetle_div$siteID
+```
+
+
+###### Write multi-trophic diversity
+```{r}
+write.csv(multi_div, "multi_div_scaling.csv")
+```
+
+```{r}
+MDI = as.data.frame((multi_div$bird_shannon_scaled+multi_div$plant_shannon_scaled+multi_div$beetle_shannon_scaled)/3)
+MDI$siteID = multi_div$siteID
+write.csv(MDI, "mdi_average.csv")
+```
+
+
+```{r}
+MDI_Shannon = as.data.frame((multi_div$bird_shannon_scaled+multi_div$plant_shannon_scaled+multi_div$beetle_shannon_scaled)/3)
+
+MDI_Chao = as.data.frame((multi_div$bird_Chao_scaled+multi_div$plant_Chao_scaled+multi_div$beetle_Chao_scaled)/3)
+
+MDI = cbind(MDI_Chao, MDI_Shannon)
+MDI$siteID = multi_div$siteID
+colnames(MDI)[1] = "Chao1"
+colnames(MDI)[2] = "Shannon"
+
+write.csv(MDI, "MDI_Shannon_Chao.csv")
+```

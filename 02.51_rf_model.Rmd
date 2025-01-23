@@ -1,0 +1,206 @@
+---
+title: "Structure v. Diversity Random Forest Model"
+author: "1st Author"
+date: "3/8/2024"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Run Random Forest Model then do a LOOCV
+#### Load libraries
+```{r, error = T}
+#install.packages(c("ggplot2", "caret", "modelr", "tidyverse"))
+library(randomForest)
+library(caret)
+library(combinat)
+library(ggplot2)
+library(tree)
+library(class)
+library(mgcv)
+library(devtools)
+library(rfPermute)
+library(gamclass)
+library(caTools)
+library(ModelMetrics)
+library(modelr)
+library(purrr)
+library(tidyverse)
+```
+
+#### Read in data table containing diversity and structure data
+```{r}
+multi_div = read.csv("md_str_11_10_2023.csv")
+```
+
+##### Get subset of the multi_div dataset, name it sub1
+##### This subset includes the significantly correlated metrics at respective scales
+```{r}
+#Pull out necessary scales
+#Select the least correlated metrics, along with latitude, longitude, MAT and MAP
+#VAI, deep-gap fraction 100m, rumple, elevation rugosity 1m, Entropy at 50, combined rugosity at 60m
+
+sub1 = multi_div[,c("MDI_Shannon", "lat", "lon", "MAP", "MAT", "r.._50m", "mmh.", "X40_95h", "rumple.", "VAI.", "dgf._100m")]
+
+colnames(sub1)[1] <- "shannon_md"
+colnames(sub1)[6] <- "combined_complexity"
+colnames(sub1)[7] <- "mean_canopy_height"
+colnames(sub1)[8] <- "max_height"
+colnames(sub1)[9] <- "rumple"
+colnames(sub1)[10] <- "VAI"
+colnames(sub1)[11] <- "dgf"
+```
+
+#### Select optimal mtry and ntree based on entire dataset
+```{r, messages = F}
+# Select optimal mtry by running code 100 times and printing them modal mtry
+# Create an empty vector to store the best mtry values
+set.seed(432)
+best_mtry_values <- numeric(0)
+
+# Set the number of iterations
+num_iterations <- 100
+
+# Loop for the specified number of iterations
+for (i in 1:num_iterations) {
+  # Create param_grid and train the random forest model
+  param_grid <- expand.grid(mtry = c(2, 3, 4))
+  rf_model <- train(
+    shannon_md ~ .,
+    data = sub1,
+    method = "rf",
+    cv = 3)
+  
+  # Collect the best mtry value
+  best_mtry_values <- c(best_mtry_values, rf_model$bestTune$mtry)
+}
+
+# Calculate and print the median of the best mtry values
+mode_mtry <- as.numeric(names(sort(table(best_mtry_values), decreasing = TRUE)[1]))
+cat("Mode Best mtry:", mode_mtry, "\n")
+```
+
+##### Get optimal ntree
+```{r, error = T}
+# Set a seed for reproducibility
+set.seed(321)
+
+# Create a function to find the best ntree value
+find_best_ntree <- function(shannon_md) {
+  ntree_values <- seq(300, 1000, by = 100)  # Adjust the range as needed
+  oob_errors <- numeric(length(ntree_values))
+  
+  for (i in seq_along(ntree_values)) {
+    ntree <- ntree_values[i]
+    rf_model <- randomForest(
+      shannon_md ~ .,
+      data = sub1,
+      ntree = ntree,
+      mtry = 2  # You can adjust the mtry value as needed
+    )
+    oob_errors[i] <- rf_model$mse[ntree]
+  }
+  
+  best_ntree <- ntree_values[which.min(oob_errors)]
+  return(best_ntree)
+}
+
+# Perform the search and collect ntree values
+ntree_results <- replicate(100, find_best_ntree(sub1))
+
+# Calculate the mode of the ntree values
+calculate_mode <- function(x) {
+  tab <- table(x)
+  mode_value <- as.numeric(names(tab[tab == max(tab)]))
+  return(mode_value)
+}
+
+mode_ntree <- calculate_mode(ntree_results)
+cat("Mode Best ntree:", mode_ntree, "\n")
+```
+
+#### Run LOOCV on this random forest model
+```{r}
+# Define the values for mtry and ntree
+#mtry_value <- 2
+#ntree_value <- 600
+
+set.seed(298)
+# Perform LOOCV with Random Forest
+loocv_results <- train(
+  shannon_md ~ .,
+  data = sub1[,c(1,3,6)],
+  method = "rf",
+  #mtry = 2, #we can choose mtry and tree, but we did not
+  ntree = 400,
+  seed = as.list(rep(1,33)),
+  trControl = trainControl(method = "LOOCV")
+)
+
+print(loocv_results)
+```
+
+##### Look at summary of model
+```{r}
+summary(loocv_results)
+```
+
+##### Pull out predictions
+```{r}
+loocv_pred = loocv_results$pred
+```
+
+#Plot pred vs obs
+```{r}
+#Prep dataframe
+sub2 = as.data.frame(multi_div[,2])
+sub2 = cbind(rowIndex = rownames(sub2), sub2)
+
+merged_data <- merge(sub2, loocv_pred, by = "rowIndex", all = FALSE)
+merged_data = merged_data[c(merged_data$mtry == "2"),]
+
+colnames(merged_data)[2] = "forest_type"
+
+RMSE(merged_data$obs, merged_data$pred)
+R2(merged_data$pred, merged_data$obs)
+MAE(merged_data$pred, merged_data$obs)
+```
+
+##### Plot Pred vs Obs
+```{r}
+tiff('rf_str_div.tiff', units="in", width = 10, height=8, res=600, compression = 'lzw')
+
+ggplot(merged_data, aes(x = obs, y = pred, color = forest_type)) +
+  geom_point(aes(shape = forest_type, fill = forest_type), size = 12, alpha = 0.7) +
+  geom_smooth(method = "lm", aes(fill = forest_type, col = forest_type), alpha = 0.2, linetype = "dashed") + 
+  scale_shape_manual(values = c(22, 24, 21)) + 
+  scale_color_manual(values = c("Mixed" = "cyan4", "Deciduous" = "deeppink",
+                                "Evergreen" = "darkgreen")) +
+  scale_fill_manual(values = c("Mixed" = "cyan3", "Deciduous" = "#E7298A",
+                                "Evergreen" = "darkgreen")) +
+  geom_abline(size = 1) +
+  theme(axis.ticks.length = unit(-0.2, "cm"), axis.title = element_text(size = 20, face = "bold", colour = "black"), 
+       panel.background = element_blank(), panel.border = element_rect(fill = NA, colour = "black"), 
+       axis.text = element_text(face = "bold", size = 15, colour = "black"), legend.key = element_blank()) +
+  labs(title = "RF", x = "Observed", y =  "Predicted") +
+  annotate("text", x = 0.3, y = 0.9, label = "R2 = 0.47, RMSE = 0.14") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0,1)) + 
+  scale_y_continuous(expand = c(0, 0), limits = c(0,1))
+
+dev.off()
+```
+
+```{r}
+rf = randomForest(shannon_md ~., data = sub1, ntrees = 300, mtry = 2)
+summary(rf)
+
+varImpPlot(rf)
+importance = as.data.frame(importance(rf))
+```
+
+
+```{r}
+write.csv(importance, "rf_importance_str_div.csv")
+```
